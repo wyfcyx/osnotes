@@ -72,7 +72,7 @@
   
   我们目前不需要对于 Pinning 有过多了解，只需知道它允许我们创建*不可移动*的 `Future`，所谓的“不可移动”指的是在字段中可以包含指针。对于实现 *async/.await* 来说，这就已经足够了。
   
-  而原来用于通知 `Executor` 对应的 `Future` 需要重新 *poll* 的 *wake* 函数也被替换，这是因为 *fn()* 只是一个函数指针，并不能包含有关是哪个 `Future` 调用了 *wake* 函数的信息。在真实应用中，一个服务器可能需要需要分别管理数千个不同的连接。而 `Context` 类型通过给一个 `Waker` 类型的值提供权限来解决这个问题。`Waker` 可以用来唤醒一个特定的任务。
+  而原来用于通知 `Executor` 对应的 `Future` 需要重新 *poll* 的 *wake* 函数也被替换，这是因为 *fn()* 只是一个函数指针，并不能包含有关是哪个 `Future` 调用了 *wake* 函数的信息。在真实应用中，一个服务器可能需要需要分别管理数千个不同的连接。而 `Context` 类型通过访问一个 `Waker` 类型的值来解决这个问题。`Waker` 可以用来唤醒一个特定的任务。
 ## 2.2 通过 `Waker` 唤醒任务
 
 * 当一个 `Future` 第一次被 *poll* 的时候还未完成是很常见的情况。这时，它就需要保证一旦它准备好继续干活，就需要再次被 *poll*。这是通过 `Waker` 来实现的。
@@ -110,14 +110,47 @@
               Poll::Ready(())
           } else {
               // 设置 Waker 使得当计时完成的时候，线程可以唤醒当前的 Task，保证对应的 Future 可以重新被 poll 并进入 'completed = true' 分支
-              // 相比每次都 clone 一个 waker，只做一次看起来更有吸引力。然而，TimerFuture 可以在 Exetutor 的不同 Task 间移动，
-              
+              // 相比每次都 clone 一个 waker，只做一次看起来更有吸引力。然而，TimerFuture 可以在 Exetutor 的不同 Task 间移动，可能导致一个过期的 waker 指向一个错误的任务，从而 TimerFuture 不能被正确唤醒（事实上可以通过恰当的实现来避免这种情况，但暂时忽略）
               shared_state.waker = Some(cx.waker().clone());
               Poll::Pending
           }
       }
   }
   ```
+  
+* 注意：每当 `Future` 被 *poll* 的时候，我们必须相应的更新 `SharedState` 中的 waker，原因在于该 `Future` 可能已经被移动到一个不同的任务与不同的 `Waker` 中。这个过程在 `Future` 在被 *poll* 之后被在任务之间作为参数传递的时候将会发生。
+
+* 接下来考虑如何创建一个 `TimerFuture`:
+
+  ```rust
+  impl TimerFuture {
+      pub fn new(duration: Duration) -> Self {
+          let shared_state = Arc::new(Mutex::new(SharedState{
+              completed: false,
+              waker: None,
+          }));
+          
+          // 创建一个新线程睡眠一段时间并在这之后更新共享状态，并使用 waker.wake() 唤醒对应 Future
+          let thread_shared_state = shared_state.clone();
+          thread::spawn(move || {
+              thread::sleep(duration);
+              let mut shared_state = thread_shared_state.lock().unwrap();
+              shared_state.completed = true;
+              if let Some(waker) = shared_state.waker.take() {
+                  waker.wake()
+              }
+          });
+          
+          TimerFuture { shared_state }
+      }
+  }
+  ```
 
   
 
+## 2.3 构造 `Executor`
+
+* Rust 中的 `Future` 是懒惰的，如果没有人驱使它们完成的话它们什么也不会做。一种方式是在 *async fn* 中使用 *.await*，但是这等于是将问题抛给更上一级，谁将负责运行最上层 *async fn* 返回的 `Future` 呢？其实就是 `Executor` 。
+* `Executor` 接受一个最上层 `Future` 集合并在其中某个 `Future` 可以继续干活的时候调用 *poll* 函数获取其最新工作进度，直到所有 `Future` 均运行结束。
+* 下面我们尝试实际构造一个 `Executor`。`Executor` 的工作原理就是通过通道将任务发出执行。`Executor` 将从通道中获取事件并运行相应的 `Future`。当一个任务被唤醒(准备好开始工作时)，它可以通过将自己放回到通道的方式来调度自己使得自己可以再次被 *poll*。
+* 在这个设计中，`Executor` 只需要任务通道的接受端
