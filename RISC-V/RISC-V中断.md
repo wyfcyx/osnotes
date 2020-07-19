@@ -100,3 +100,15 @@
 我们可以在软件上修改 `xstatus.xpp` 随后 XRET 来进入更低的优先级！这是我之前一直忘记的... 
 
 要考虑的事情是，假如 hart 目前处于 M/S/U 态，这时在 PLIC 上任意一个与该 hart 相关的目标 M/S/U External Interrupt 进来了信号（当然，同时也可能从 CLINT 上进来软件/时钟中断的信号），那么该 hart 会如何处理？
+
+## K210 S 态串口中断探索
+
+首先，确认到通过 `sbi::console_getchar` 轮询输出字符是可行的。
+
+接下来，首先看能不能触发到 M 态中断。
+
+直接在 OpenSBI 打开串口的接受端中断使能，但是并没有触发 OpenSBI 中的 `unhandled external interrupt`。这大概是个什么情况呢...?
+
+在考虑屏蔽之前，首先把 PLIC 上 uart 中断到 hart0 各特权级的外部中断的 IE 寄存器给打开。然后再试一试。目前 M/S EI 到 uart1/2/3 的 IE 全都打开了，也还是进不到中断...
+
+魔改了一下 OpenSBI 中的 `sbi_hart.c`，把 `mstatus.mie` 以及 `mie.meie` 都在启动的时候打开了。现在终于能在 M 态收到中断了...
