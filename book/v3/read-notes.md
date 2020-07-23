@@ -306,4 +306,95 @@ fork 下来，准备看着文档从头来一遍
   好在我们大概可以通过软件中断来搞（之前尝试过 S 态软件中断可以正常收到），但是可能要对 OpenSBI 做更大的修改。
 
   我更期望是能够从这一章节开始，从零开始为 K210 自己实现一套特定的 SBI。由于并不是按照 SBI 标准提供接口可能也不能叫做 SBI 了，只是一段简单的 M 态软件，能够为上层的 K210 提供支持。
+  
+  这与洛佳大佬的看法一致，他也打算在自己的 SBI 实现中扔掉 K210 的支持。事实上还是单独为 K210 搞一套运行时会更好。如果我有时间的话会去尝试一下。
+  
+* 如果想走通过 S 态软件中断来代理这条路，为了日后对于 IPI 的支持，首先要解决的一点就是当进入 S 态软件中断之后应该如何区分这是其他 hart 发给它的中断，还是它自己上面产生的 M 态外部中断代理过来的。
+
+  但还是应该把这条路跑通再去考虑之后的拓展...
+  
+* 目前算是走通了，但是无论在 M 态还是在 S 态软件中断中读 `uarths.rxdata` 都会发现其 `empty` 恒为 1，且一开始读数据会读出 7 个 0。后面的输入则分别有不同程度上的延迟...
+
+  对于这个诡异的现象实属无能为力QAQ
+  
+  难道是 hart1 永远滴神，hart0 不行？
+  
+* 目前先不进行更多的尝试了，找到一个 [nommu Linux for K210](https://github.com/vowstar/k210-linux-nommu)，跑一下试试，看看人家是怎么搞串口中断的；此外，还找到了学长在 K210 M Mode 上跑 Linux0.11 的[记录](https://github.com/lizhirui/K210-Linux0.11)，都来试试看吧。rjgg 的 rCore on K210 在 Rust 的版本更新后好像编译不了了，万恶的 cargo-xbuild...事实上，硬改掉某些库的代码似乎可行...?
+  
+* 尝试了一下之后发现只有学长的 Linux0.11 能够复现，但是其功能过于简单，貌似对我目前参考价值不是很大...
+  
+* 这时，我又尝试跑了一下 K210 官方 SDK 基于 UART3 而非 UART0(也即 UARTHS) 的串口中断测试程序，发现它居然能够正常运转。于是接下来的任务也就是把 UART0 换成 UART1~3 了（它们三个之间除了 MMIO 地址不同之外没有任何不同）
+  
+  直接将 SDK 相关代码移植到 OpenSBI 中过于令人不爽，因此，我尝试直接跟踪官方 SDK 示例中初始化通用串口的全过程，这样之后在实现自己的 M 态软件的时候也可以稍微轻松一些。
+  
+  首先是常规的 `plic_init, sysctl_enable_irq` ，这两个功能比较简单我们之后再说...
+  
+  接下来调用了 `uart_init(UART_NUM)`，这个函数可以在 `uart.c` 中找到：
+  
+  ```c
+  void uart_init(uart_device_number_t channel)
+  {
+      sysctl_clock_enable(SYSCTL_CLOCK_UART1 + channel);
+      sysctl_reset(SYSCTL_RESET_UART1 + channel);
+  }
+  ```
+  
+  在 `sysctl.c` 中找到 `SYSCTL_CLOCK_UART1=25`。
+  
+  ```c
+  int sysctl_clock_enable(sysctl_clock_t clock)
+  {
+      if(clock >= SYSCTL_CLOCK_MAX)
+          return -1;
+      sysctl_clock_bus_en(clock, 1);
+      sysctl_clock_device_en(clock, 1);
+      return 0;
+  }
+  ```
+  
+  观察 `sysctl_clock_bus_en` 函数，实际上根据传入的 `clock` 可知二者实际上分别做的就是
+  
+  ```c
+  sysctl->clk_en_cent.apb0_clk_en = en;
+  // 这里根据要启用的是 UART1/2/3 而不同
+  sysctl->clk_en_peri.uart1_clk_en = en;
+  ```
+  
+  再去找 `sysctl_reset` 函数：
+  
+  ```c
+  void sysctl_reset(sysctl_reset_t reset)
+  {
+      sysctl_reset_ctl(reset, 1);
+      usleep(10);
+      sysctl_reset_ctl(reset, 0);
+  }
+  ```
+  
+  其中的 `sysctl_reset_ctl` 函数找到实际做的是下面的事情：
+  
+  ```c
+  // 这里同样根据 UART1/2/3 而不同
+  sysctl->peri_reset.uart1_reset = rst_value;
+  ```
+  
+  而 `usleep` 函数则是能在 `sleep.c` 中找到：
+  
+  ```c
+  int usleep(uint64_t usec)
+  {
+      uint64_t cycle = read_cycle();
+      uint64_t nop_all = usec * sysctl_clock_get_freq(SYSCTL_CLOCK_CPU) / 1000000UL;
+      while(1)
+      {
+          if(read_cycle() - cycle >= nop_all)
+              break;
+      }
+      return 0;
+  }
+  ```
+  
+  功能很简单，就是休眠一段时间等待 sysctl 状态趋于稳定。
+  
+  
 
