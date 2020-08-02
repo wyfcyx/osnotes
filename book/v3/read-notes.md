@@ -396,5 +396,66 @@ fork 下来，准备看着文档从头来一遍
   
   功能很简单，就是休眠一段时间等待 sysctl 状态趋于稳定。
   
+  这样 `uart_init` 代码就看完了。
   
+  接下来调用的是 `uart_configure` 函数，它同样能在 `uart.c` 中找到，主要是修改了以下设备寄存器：
+  
+  ```c
+  uart[channel]->LCR |= 1u << 7;
+  uart[channel]->DLH = dlh;
+  uart[channel]->DLL = dll;
+  uart[channel]->DLF = dlf;
+  uart[channel]->LCR = 0;
+  uart[channel]->LCR = (data_width - 5) | (stopbit_val << 2) | (parity_val << 3);
+  uart[channel]->LCR &= ~(1u << 7);
+  uart[channel]->IER |= 0x80; /* THRE */
+  uart[channel]->FCR = UART_RECEIVE_FIFO_1 << 6 | UART_SEND_FIFO_8 << 4 | 0x1 << 3 | 0x1;
+  ```
+  
+  相关寄存器的说明可以在[这里](https://www.lammertbies.nl/comm/info/serial-uart)找到。从文档来看每个寄存器应该都是 8 位，但不知道为什么 SDK 里面都定义成了 `uint32_t` 了...
+  
+  ![](uart_legacy.png)
+  
+  我们首先设置 `LCR` 的 DLAB 位，它可以决定前两个寄存器是 `RBR/THR/IER` 还是 `DLL/DLM`。有意思的一点是，对于第一个寄存器而言，当读的时候它是 `RBR`，而写的时候它又变成了 `THR`。这里我们将 DLAB 设置为 1，于是前两个寄存器读写都是 `DLL/DLM` 了，它们两个分别表示 divisor latch 的高/低 8 位。
+  
+  可以看到，SDK 将上图中的 `DLM` 换成了 `DLH`，同时新增了一个 `DLF`。Google 了一下这个 DLF，发现海思公司近两年出的一款 uart 貌似有 `DLF` 寄存器，但是文档不让下载...其实我更倾向于这个串口可能是 Kendryte 自己魔改出来的，没有任何相关文档只提供给你接口，要是想写驱动的话就只能照着 SDK 一行一行的扒...毕竟他们上层的 Python 环境跑通之后可就不管作底层的人的死活了QAQ。但是应该还是有很大一部分是相同的...所以暂且耐着性子看下去吧2333。
+  
+  修改完 `DLL/DLM` 之后，我们将 DLAB 位置 0 开始修改 `RBR/THR/IER`。对于 `LCR` 而言，我们从低到高分别设置 data word length，停止位，校验位，后面一行不知道什么意思。
+  
+  接下来修改的 `IER` 是中断使能，`0x80` 什么含义就不知道了。而 `FCR` 是 FIFO 控制寄存器，分别设置了启用 FIFO、将 DMA Mode 设置为1、以及相应设置接收/传输触发中断所需的字节数量。
+  
+  虽然还不是很懂，但是初始化到这里就差不多了。
+  
+  后面的 `uart_set_receive_trigger, uart_irq_register` 都不难理解。接收和传输数据分别用的是 `uart_receive_data, uart_send_data`，分别来看看二者的实现：
+  
+   ```c
+  int uart_receive_data(uart_device_number_t channel, char *buffer, size_t buf_len)
+  {
+      size_t i = 0;
+      for(i = 0; i < buf_len; i++)
+      {
+          if(uart[channel]->LSR & 1)
+              buffer[i] = (char)(uart[channel]->RBR & 0xff);
+          else
+              break;
+      }
+      return i;
+  }
+  
+  // uart_send_data 主要是通过 uart_channel_putc 来实现
+  static int uart_channel_putc(char c, uart_device_number_t channel)
+  {
+      while(uart[channel]->LSR & (1u << 5))
+          continue;
+      uart[channel]->THR = c;
+      return c & 0xff;
+  }
+   ```
+   可见，`LSR` 作为状态寄存器，其标志位 `0, 5` 功能类似于 empty 和 full；而可以读写的时候，就分别从 `RBR` 读和写入 `THR` 就好了。
+  
+  差不多懂了，但是自己移植起来太累，现在有一个[k210-pac](https://github.com/riscv-rust/k210-pac)就做的很好，直接用起来就行了。[这里](https://github.com/laanwj/k210-sdk-stuff/blob/master/rust/buffered-uart/src/lib.rs)是一个利用 k210-pac 与串口 UART1 通过中断进行输入的例子。
+  
+* 看了一下觉得还不如自己写一个，正好也可以重构一下整个项目目前有点混乱的代码。
+
+  同时也尝试了一下，只要在 M 态处理外部中断转发给 S 之前将 `stval` 寄存器设置为 IRQID 就可以了，S 态不会修改它。
 
