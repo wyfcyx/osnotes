@@ -458,4 +458,78 @@ fork 下来，准备看着文档从头来一遍
 * 看了一下觉得还不如自己写一个，正好也可以重构一下整个项目目前有点混乱的代码。
 
   同时也尝试了一下，只要在 M 态处理外部中断转发给 S 之前将 `stval` 寄存器设置为 IRQID 就可以了，S 态不会修改它。
+  
+* 尝试了高速串口和通用串口的中断，都能够在 S 态收到并处理，然而都有问题...现在先放下去搞后面的 lab
+
+## lab2
+
+* 内核堆大小从 $8\text{MiB}$ 改成 $1\text{MiB}$。
+
+* 可以通过 `core::mem::drop` 直接将变量回收而无需通过构造一个无意义的作用域的方法。
+
+* 发现 `buddy_system_allocator` 不能用...我人傻了，难道要重新写一个 `BitsetAllocator` 吗？但是分配的粒度就很有问题了。
+
+* 尝试搞了一下把大二进制文件换成两个小文件打包成一个 `.kfpkg`，速度提高了不少，但我很怀疑它是不是真的写进去了，目前好像还有问题。
+
+* 通过清掉 `.bss` 段成功把堆测试跑起来了，然而......删掉两条输出语句整体都没有输出了，这没道理啊......这也太玄学了吧QAQ
+
+  尝试把逐字节清零改成逐 64 位清零，然后两条输出语句没有也行了...
+
+  这是真的玄学
+
+* 又尝试基于 `kfpkg` 加速烧写，但是好像完全烧不进去，不知道怎么才算是正确的姿势。
+
+  最后我强行通过把 $\mathtt{0x8020\_0000}$ 改成 $\mathtt{0x8002\_0000}$ 来把烧写速度提高 16 倍:smile: 
+  
+* 找到了一个能够软件 reset 板子的[方法](https://github.com/kendryte/kflash.py/blob/master/kflash.py#L730)，来自 `kflash.py`
+
+* `memory/address.rs` 仔细想想确实还是利用了宏的特性有效减少了代码量，不用物理地址和虚拟地址各搞一套
+
+  **还是有些不懂 `#[repr(C)]` 以及 `#[derive]` 那么多意义何在？**
+
+  实现了地址与页号互转，同类型之间各种加减
+  
+* 通过 `FrameTracker` 来给一块物理内存一个生命周期，在页表的接触映射的时候会自动回收内存，先看看它的好处吧
+
+  实现了 `std::ops::Drop` Trait，在变量被 Drop 的时候通知 `FRAME_ALLOCATOR` 回收该物理页帧
+
+  在 `FrameTracker` 中保存的实际上是物理页号
+
+* 然后，`FrameAllocator` 及其静态实例 `FRAME_ALLOCATOR` 的结构是这样的：
+
+  首先定义一个 `Allocator` Trait，其提供的接口 `alloc, dealloc` 应该是在 $[0,N)$ 的下标区间上做单下标的分配、回收
+
+  接着 `FrameAllocator` 也就利用了 `Allocator` :
+
+  ```rust
+  pub struct FrameAllocator<T: Allocator> {
+      start_ppn: PhysicalPageNumber,
+      allocator: T,
+  }
+  ```
+
+  这里把开头物理页号封装进去，从一个抽象分配器经过适配变成分配实际的物理页。分配`alloc`、回收`dealloc`的单位是 `FrameTracker`。当 `FrameTracker` 生命周期（退出作用域）结束后，就会在全局实例 `FRAME_ALLOCATOR` 中回收掉对应的物理页。
+
+  分配会拿到一个 `FrameTracker`，但是不能当分配函数结束之后就直接把它回收。因此猜想需要使用引用计数 `Arc` 把它弄到 `PageTable` 里面去，等这个数据结构被 Drop 之后再进行回收。
+
+* 才发现 `Range` 是自己定义的。
+
+  为 `Range<T>` 实现一个 `From<core::ops::Range<U>>` 的 Trait，可以将一个核心库中的 Range 转换成一个我们自己定义的 Range，其中 `T: From<usize> + Into<usize> + Copy` 表示可以和 `usize` 互相转换，其实就是指 `PhysicalPageNumber, PhysicalAddress` 这些东西。`U` 类型被包裹在核心库中的 Range 中，实现了 `Into<T>` ，也就是可以转换成 `T` 也就是 `PhysicalPageNumber, PhysicalAddress` 这些东西。
+
+  总体来说：
+
+  1. `std::ops::Range<U>` 可以转成 `Range<T>`，其中 `U` 可以转成 `T`，`T` 可以和 `usize` 互转，主要是指 `PhysicalAddress, PhysicalPageNumber` 这些类型。
+  2. 那么 `Range<T>` 又提供哪些功能呢？主要有以下几种：
+     * `overlap_with`，判断当前 Range 是否会和其他 Range 相交；
+     * `iter`，生成一个遍历区间中所有元素的迭代器；
+     * `len`，输出区间中元素的数量；
+     * `into::<U>`，给定类型 `U` ，要求 `T` 可以转换成 `U`，将 `Range<T>` 转换成 `Range<U>`，主要用于虚拟页号区间与物理页号区间之间的互转；
+     * `get`，指定区间中的一个位置取得一个元素；
+     * `contains`，判断某个元素是否在当前区间中。
+
+  确实对于这种 Rust 原生 Trait 是我比较头痛的地方，sadsad。强行自己写了一下好像稍微好点了。
+
+* 另一个问题是到底如何来进行模块划分...现在我能够做到的程度仅限能编译。
+
+* 将所有的抽象算法分离出来到 `algorithm` 模块里面，确实在模块化上是一个很大的进步。但是觉得弄成一个 crate 有点没必要，弄成一个 mod 似乎就行了。
 
