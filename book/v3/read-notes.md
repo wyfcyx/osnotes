@@ -42,6 +42,13 @@
 
 fork 下来，准备看着文档从头来一遍
 
+## Rust 语法知识点总集编
+
+* Into/From: 在 lab3 中大量的 `PhysicalPageNumber, PhysicalAddress, VirtualPageNumber, VirtualAddress` 之间的转换（其实在 lab2 里面就已经出现了）
+* crate `bitflags/bit_field`: 在 lab3 处理页表项的各字段、各标志位的时候用到。
+
+* Deref/DerefMut: 在 lab3 中 `PageTableTracker` 自动解引用到 `PageTable` 时第一次出现；
+
 
 ## lab0
 
@@ -461,6 +468,8 @@ fork 下来，准备看着文档从头来一遍
   
 * 尝试了高速串口和通用串口的中断，都能够在 S 态收到并处理，然而都有问题...现在先放下去搞后面的 lab
 
+* 清空完 `.bss` ，再加上一些黑科技发现又能跑了...具体内容参见 K210 移植报告吧
+
 ## lab2
 
 * 内核堆大小从 $8\text{MiB}$ 改成 $1\text{MiB}$。
@@ -512,7 +521,7 @@ fork 下来，准备看着文档从头来一遍
 
   分配会拿到一个 `FrameTracker`，但是不能当分配函数结束之后就直接把它回收。因此猜想需要使用引用计数 `Arc` 把它弄到 `PageTable` 里面去，等这个数据结构被 Drop 之后再进行回收。
 
-* 才发现 `Range` 是自己定义的。
+* 才发现 `Range` 是自己定义的。里面和 `core::ops::Range` 一样都有 `start, end`，那么多了哪些功能呢？
 
   为 `Range<T>` 实现一个 `From<core::ops::Range<U>>` 的 Trait，可以将一个核心库中的 Range 转换成一个我们自己定义的 Range，其中 `T: From<usize> + Into<usize> + Copy` 表示可以和 `usize` 互相转换，其实就是指 `PhysicalPageNumber, PhysicalAddress` 这些东西。`U` 类型被包裹在核心库中的 Range 中，实现了 `Into<T>` ，也就是可以转换成 `T` 也就是 `PhysicalPageNumber, PhysicalAddress` 这些东西。
 
@@ -532,4 +541,191 @@ fork 下来，准备看着文档从头来一遍
 * 另一个问题是到底如何来进行模块划分...现在我能够做到的程度仅限能编译。
 
 * 将所有的抽象算法分离出来到 `algorithm` 模块里面，确实在模块化上是一个很大的进步。但是觉得弄成一个 crate 有点没必要，弄成一个 mod 似乎就行了。
+
+* luojia65 一直在跟我讨论各种项目上的事情，一不小心就搞出了个死锁，后来发现并且跑通了，算是 lab2 完结撒花了吧。此外，顺便把 `TICKS` 改成 `spin::Mutex` 实现了，不然一直是心中的一个坎。
+
+* 怀疑是之前的某些实现有点问题（没有清空 .bss 段，又或者是某些 unsafe 问题），决定重新尝试一下串口中断。
+
+* 清空 `.bss` 段产生的奇妙 bug: 在 wsl1 Ubuntu20.04 上只能使用 rv64imac target；在 Ubuntu20.04 上只能使用 rv64gc target，否则会产生诡异的非法指令异常，怀疑是编译器 bug，后面会尝试把清空 `.bss` 段的代码改成汇编
+
+* zhy 大佬帮我发现了清空 `.bss` 段顺便也会把启动栈清空的问题，现在看起来一切正常了
+
+## lab3
+
+* 尝试把 `.bss.stack` 换成 `.data.stack`，结果可执行文件的大小大了三倍...暂时还是改回去了
+
+* 把 `.bss.stack` 独立到链接脚本中的 `.stack` 段中
+
+* 把所有的段都进行 4K 对齐确实是之前忽略的点
+
+* 按照 rjgg 之前的[MMU 移植经验](https://github.com/oscourse-tsinghua/rcore_plus/issues/34) 以及 [MMU 魔改版 OpenSBI](https://github.com/rcore-os/opensbi/commit/4400a1a7d40b5399b3e07b4bad9fd303885c8c16) 加上新一轮魔改，终于把内核初始映射跑通了，把大概经历的过程记录一下
+
+* 在内核里面，首先将 `linker.ld` 中的 `BASE_ADDRESS = 0xffffffff80020000` 改过来，从此直接将内核弄到虚拟地址空间去（回忆一下，内核代码数据需要放到高地址空间，而用户代码数据放到低地址空间）
+
+* 随后是 K210 基于的 1.9.1 版本导致的一系列改动，在 1.9.1 版本中，MMU 模式需要在 `mstatus.vm` 中设置
+
+  ![](mstatus-1.9.1.png)
+
+  将其设为 9 表示启用 sv39 分页。
+
+  而在新版 spec 中我们所熟知的 `satp` CSR 在 1.9.1 中是另一个与之 CSR ID 相同但名字却不同的 `sptbr`：
+
+  ![](sptbr-1.9.1.png)
+
+  与 `satp` 相比，少了最开头的 10 位 Mode。
+
+  这使得，与之前不同的一点，在于在 1.9.1 中使能页表机制需要分成两个阶段。而不像后续版本中只需一条指令修改 `satp` 即可。（这个改进实在很赞）
+
+  我们必须将两阶段都放在 M 态（也即 OpenSBI ）中，也需要在 OpenSBI 中开 4KB 来存储初始三级页表。
+
+  这只需要在 OpenSBI 中写一个初始化函数：
+
+  ```c
+  static void k210_paging_init()
+  {
+  	static uintptr_t BOOT_PAGE_TABLE[1 << RISCV_PGLEVEL_BITS]
+  		__attribute__((aligned(RISCV_PGSIZE)));
+  
+  	BOOT_PAGE_TABLE[   2] = (0x80000000u >> 12 << 10) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
+  	BOOT_PAGE_TABLE[0776] = (0x80000000u >> 12 << 10) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
+  	csr_write(CSR_SATP, (uintptr_t)BOOT_PAGE_TABLE >> RISCV_PGSHIFT);
+  
+  	// enable Sv39
+  	long mstatus = csr_read(CSR_MSTATUS);
+  	mstatus |= 9 << 24;
+  	csr_write(CSR_MSTATUS, mstatus);
+  }
+  ```
+
+  一级页表每个页表项 $4\text{KiB}$，二级页表每个页表项 $2\text{MiB}$，三级页表每个页表项 $1\text{GiB}$ 即 $\mathtt{0x4000\_0000}$。
+
+  首先，我们自然希望 $\mathtt{[0xFFFF\_FFFF\_8000\_0000,0xFFFF\_FFFF\_C000\_0000)}$ 能够映射到 $1\text{GiB}$ 的大物理页 $\mathtt{[0x8000\_0000,0xC000\_0000)}$（虽然实际上物理内存并没有那么大），大物理页号 $\mathtt{0x80000}$。
+
+  此外，在 OpenSBI 结束后会通过 MRET 跳转到内核，但从代码中看到 MEPC 会被设置为 $\mathtt{0x8002\_0000}$，但在进入 S 态之后它会被视为虚拟地址，我们还是要保证它要能通过页表机制找到实际放在物理内存上的代码与数据（事实上，就是 `entry.asm` 初始化阶段的几行代码，在那里我们正式跳转进入高地址空间），因此，我们还需要一个从虚拟地址空间 $\mathtt{[0x8000\_0000,0xC000\_0000)}$ 等地址映射到物理地址空间 $\mathtt{[0x8000\_0000,0xC000\_0000)}$，这个页表项自然在初始三级页表中为第二项（下标从 0 开始）。
+
+  rjgg 的记录中提到了这样一个盲点，在 `sbi_hart_switch_mode` 函数最终进入 S 态的内核之前，会将我们好不容易写好的 `satp` 清零，要将这行代码删除。
+
+  这样，在 `entry.asm` 中就只需要设置栈和跳转到 `rust_main` 就行了。
+
+* 接下来，就需要处理精细的内核映射了。
+
+* 在 `address.rs` 里面加入了以下内容：
+
+  1. raw pointer `*const T,*mut T` 到 `VirtualAddress` 的转换；
+
+  2. 虚拟/物理地址、虚拟/物理页号**之间**的相互转换；**仅限于线性映射有效，会不会引起歧义？**
+
+  3. 给定虚拟地址/物理地址与某类型，取得对应的可变引用
+
+     这里有一个有趣的语法：``unsafe { &mut *(self.0 as *mut T) }``，注意只有对 raw pointer deref 是 unsafe 行为
+
+  4. 给定虚拟页号/物理页号（要经过线性映射）拿到页面，也就是一个 u8 大数组
+
+     抄代码抄到有点想吐了...
+
+     发现我个人的思维方式还是比较喜欢 `into` ...不然的话岂不是 `Deref` 就不是唯一的隐式类型转换了...
+
+     关于 `into` @luojia65 告诉我这样一些经验：
+
+     * `into::<T>` 中的 `T` 只能是泛型，这说明这种写法只能使用在泛型函数中；
+     * 在当前类型可能通过 `into` 转化为多种类型时（也就是多种类型都可以 from 它过来），需要开一个变量绑定它的结果，并显式指定该变量的类型（另一种情况是作为函数返回值），这样 `into` 才能知道转化成什么类型。然而，这样的话显然就不能在一行里面完成全部代码，很不爽
+     * 因此，这种情况下还是用 `from` 吧！
+
+  5. 给定虚拟页号将其转成三级页索引形成的一个数组
+
+     `get_bits, get_bit` 貌似来自于 `bit_field` 这个 crate，看起来还是很方便的
+
+* 开始在 `page_table_entry.rs` 里面写页表项。
+
+  页表项里面的物理页号字段在 1.9.1 里面位于 10..48，而在新版本中位于 10..54，好像没啥区别，但还是暂且先改成 10..48。
+
+  `bitflags` 提供的 `set` 和 `bit_field` 提供的对于各种整数类型都能用的 `get/set_bit(s)` 确实很好用。
+
+  很奇怪的一点是：在 `&mut self` 里面调用同类型的 `&self` 会出现错误：
+
+  ```
+  error[E0502]: cannot borrow `*self` as immutable because it is also borrowed as mutable
+  ```
+
+  但是我看第三版中的确也是这样写的。不知道为啥能通过。目前我将用到 `&self` 的函数独立到 `&mut self` 调用之外来通过编译。
+
+  基于 `debug_struct` 可以有 `core::fmt::Debug` 的一个比较简单的实现。
+  
+* 开始在 `page_table.rs` 里面写页表。
+
+  这里面 `PageTable` 保存的是一个 `PageTableEntry` 的一个大数组，而 `PageTableTracker` 里面包裹着一个 `FrameTracker`，这个 `FrameTracker` 管理的是 `PageTable` 所在的物理页面。
+  
+  且来分析页表的创建，假设是从三级页表创建一个新的二级页表：
+  
+  1. 在某个地方分配一页物理页帧拿到了一个 `FrameTracker`；
+  
+  2. ```rust
+     impl PageTableTracker {
+         pub fn new(frame: FrameTracker) -> Self {
+             let mut page_table = Self(frame);
+             page_table.zero_init();
+             page_table
+         }
+     }
+     ```
+  
+     可以看出，该 `FrameTracker` 最终会被转移到 `PageTableTracker` 中，待 `PageTableTracker` 生命周期结束被回收之后，页表所在的物理页帧才会被物理内存管理器回收。
+  
+     > 之前有点陷入思维误区，认为要通过 `Arc` 这种引用计数引用变量，它才不会被回收；但其实更方便的是直接把它的所有权转移到其他尚在生命周期之内的结构体之中。
+  
+  3. 至于 `PageTableTracker` 的生命周期又如何呢？那我们就来看映射算法的核心部分是如何使用 `PageTableTracker` 的。
+  
+* 开始实现内核重映射。
+  
+  加入了 `Segment` 类表示一段以同样方式映射到物理内存（线性映射或页分配映射）、权限相同的一段虚拟地址空间。自然，其中需要保存映射类型、以 `Range` 来描述的虚拟地址区间、以及权限。
+  
+  `Segment` 实现的功能有：通过 `page_range` 获得一个虚拟页号的 `Range`；以及通过 `mapper_iter` 获得一个映射到的物理页号的迭代器，这个只有 `Linear` 才有，`Framed` 仅在 `Segment` 内是不知道都映射到哪里去了的。现下倒是还不知道这两个接口是干什么的。
+  
+  `Mapping` 类代表一颗页表树（也即一个完整的映射，或者说一个虚拟地址空间的一个可以使用的子集），于是：
+  
+  1. 自然要有三级页表所在的物理页号，这样就可以找到所有页表了。
+  
+  2. 同时，我们还希望 `Mapping` 类能够管理所有相关页表的生命周期，当这个映射被销毁（这种情况可能仅限于用户进程生命周期结束，合理猜测 `Mapping` 作为用户进程内核对象的一个成员而存在）时，相关的所有的页表所在的物理页面亦会被回收。由此，我们将 `Vec<PageTableTracker>` 放到 `Mapping` 里面。
+  
+  3. 此外，还注意到 `Mapping` 中含有 `VecDeque<(VirtualPageNumber, FrameTracker)>`，这个也暂时不知道作甚么用。看起来是记录下从虚拟页到实际映射到的物理页的映射，这种做法以消耗一定内存空间为代价，...
+  
+     然而，这样做有必要吗？
+  
+  `Mapping` 实现的功能有：
+  
+  * `new`：建立一个新的映射；
+  
+  * `find_entry(&mut self, VirtualPageNumber) -> &mut PageTableEntry`：从虚拟地址找到对应的三级页表项，若有必要的话则依次新建次级页表。
+  
+    当然，它是为了映射的扩充操作而存在的，找到页表项之后，我们即可将其中的标志位进行修改。此时，需要刷新 TLB 吗？也许在映射的扩充过程中并不必这样做，因为相应的虚拟地址在 TLB 中并不存在。
+  
+    这样想来，单核环境下，需要通过 `sfence.vma` 刷新 TLB 的大致只有三个场景：
+  
+    1. 在内核初始映射结束之后，TLB 尚未被初始化，可能导致映射错误（然而，目前并未出错）
+    2. 在进程切换的过程中，由于切换了页表，之前 TLB 中的内容错误，需要将 TLB 全部刷新
+    3. 在某个映射仍然存在，但它通过系统调用被缩减，此时可能需要将被缩减的部分对应的 TLB 进行刷新
+  
+    **于此插一句，在文档写作时可能需要注意：究竟什么东西放在内核里面（内核数据结构），什么东西放到内核外（只是仅仅放到内存中，如用户进程的代码数据）；同时，究竟什么东西放到内存中，什么东西放到外存中，如此比对一下，或者给出清晰的图示，可能会更容易让人理解。**
+  
+    实现的话，首先依次取得各级索引，然后从 `root_ppn` 开始逐次向下查，将以下过程重复三次：
+  
+    待查的页表是以物理页号 `PhysicalPageNumber` 的形式给出的，首先要将其转换（`deref` 函数是一个非常自然的实现）为页表 `PageTable`，它是一个页表项 `PageTableEntry` 的大数组，从中自然可以根据各级索引查到对应的页表项。看到页表项之后，首先检查其合法标志位 `VALID`，如果合法的话就可以直接找到下一级页表所在的物理页号；否则需要分配一个物理页帧，将其物理页号写在当前的页表项相应字段中，这个物理页帧也将用来放置下一级页表，并修改页表项的标志位能够让它成为一个合格的中转站。
+  
+    这样，从一个物理页号起始，到下一个物理页号终止，整个过程完毕。该过程重复三次之后，输出的物理页号将是输入的虚拟页实际映射到的物理页帧的页号。
+  
+    但在这个函数中，需要实现的功能略为简单，我们只需返回最后一级页表项的可变引用即可。
+  
+    > 暴露出根本不会 Rust...
+    >
+    > `vec!` 宏要通过 `alloc::vec` 来引用，而 `Vec` 要通过 `alloc::vec::Vec` 来引用。
+    >
+    > 发现 `PhysicalAddress` 能够 `deref_kernel` 到任意类型，而 `PhysicalPageNumber` 只能 `deref_kernel` 到 `&static' mut [u8; 4096]`。所以 `PhysicalPageNumber` 的 `deref_kernel` 似乎并非用于页表。
+  
+    **恶心。我觉得现在已经有点想吐了。先去看一下 async Rust。**
+  
+  
+  
+   
+  
+  
 
