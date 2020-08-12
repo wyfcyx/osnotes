@@ -1039,11 +1039,196 @@
 * 学习跨暂停点（await）的变量借用是怎样被实现的；
 * 了解一系列跟 `Pin` 打交道的宝贵经验。
 
-让我们直接开始吧。Pinning 属于那种在刚接触的时候很难想清楚的东西，但是一旦你建立起它的心智模型，它的一切就会变得非常容易理解。
+让我们直接开始吧。Pinning 属于那种在刚接触的时候很难想清楚的类型，但是一旦你建立起它的心智模型，就会很容易理解它的一切。
 
 ## 定义
 
+* `Pin` 包裹着里面的指针。所谓的指针，也就是指向一个对象的引用（这里应该不包括 raw pointer）。我们后面将会提到，`Pin` 保证里面的指针指向的数据能够满足某些性质。
 
+* Pin 包括 `Pin` 类型和一个 `Unpin` 标志。Pin 的目标是使某些规则适用于所有被标记为 `!Unpin` 的类型。正如你所想，`!Unpin` 意味着非 `Unpin`，这是一个双重否定。
+
+  > Rust 的命名规范也是它的安全特征之一。一次性安全的实现一个类型可能很难，于是你可以先将它标志成  `!Unpin`，然后先暂且休息，等到头脑清醒的时候再继续你的工作。
+
+*  从更加严谨的角度，我觉得应当指出的是名字的选取背后都有着合理的原因。要知道命名不是一件容易的事情，我也曾试着在这本书中给 `Unpin` 和 `!Unpin` 起一个别名来让它们更容易被理解。然而， Rust 社区的一个身经百战的成员使我确信，即使我只是简单的这样给标记们更换名字，也会产生大量微妙的差异，尤其是在那些难以被注意到的地方。因此，我们在这里只是接受并使用它们就行了。
+
+  如果你对这件事情感兴趣的话，你可以看一点 [internals thread](https://internals.rust-lang.org/t/naming-pin-anchor-move/6864/12) 中的讨论。
+
+## Pinning 和自引用结构
+
+* 让我们从上一章结束的地方继续。上一章我们在 Generator 中使用过自引用结构，但这一次我们将试着将它们变得比状态机更容易理解，来简化整个问题。
+
+* 现在我们的实例代码会变成这个样子：
+
+  ```rust
+  use std::pin::Pin;
+  
+  #[derive(Debug)]
+  struct Test {
+      a: String,
+      b: *const String,
+  }
+  
+  impl Test {
+      fn new(txt: &str) -> Self {
+          Test {
+              a: String::from(txt),
+              b: std::ptr::null(),
+          }
+      }
+  
+      fn init(&mut self) {
+          let self_ref: *const String = &self.a;
+          self.b = self_ref;
+      }
+  
+      fn a(&self) -> &str {
+          &self.a
+      }
+  
+      fn b(&self) -> &String {
+          unsafe {&*(self.b)}
+      }
+  }
+  ```
+
+  这段代码将贯穿这一章，因此我们来仔细说明一下它。
+
+  我们声明了一个自引用结构 `Test`，它需要调用 `init` 才能进行初始化而不是在创建的时候进行初始化，这和我们上一章的 `GeneratorA::Yield1` 是一回事。这看起来非常奇怪，但是为了尽可能缩短示例代码的长度，我们只能这样做了。
+
+  `Test` 分别提供两个不同的方法来获取它的字段 `a` 和 `b` 的引用。我们知道 `b` 是指向 `a` 的引用，但是如果将其声明为一个引用，在 Rust 的借用规则下我们无法给 `b` 一个合适的生命周期参数，因此只能将它声明为一个裸指针。
+
+  接下来，我们用这段示例代码来详细解释我们遇到的问题。如你所见，下面的代码能够正常工作：
+
+  ```rust
+  fn main() {
+      let mut test1 = Test::new("test1");
+      test1.init();
+      let mut test2 = Test::new("test2");
+      test2.init();
+  
+      println!("a: {}, b: {}", test1.a(), test1.b());
+      println!("a: {}, b: {}", test2.a(), test2.b());
+  
+  }
+  ```
+
+  在主函数中我们创建两个 `Test` 实例并分别打印它们各字段的值。其结果为：
+
+  ```rust
+  a: test1, b: test1
+  a: test2, b: test2
+  ```
+
+  重头戏来了！让我们试试将变量 `test1/test2` 绑定的数据进行对调：
+
+  ```rust
+  fn main() {
+      let mut test1 = Test::new("test1");
+      test1.init();
+      let mut test2 = Test::new("test2");
+      test2.init();
+  
+      println!("a: {}, b: {}", test1.a(), test1.b());
+      std::mem::swap(&mut test1, &mut test2);
+      println!("a: {}, b: {}", test2.a(), test2.b());
+  
+  }
+  ```
+
+  表面上看，这等价于将第一行输出语句重复两次，所以它会输出：
+
+  ```rust
+  a: test1, b: test1
+  a: test1, b: test1
+  ```
+
+  然而实际上这段代码的输出为：
+
+  ```rust
+  a: test1, b: test1
+  a: test1, b: test2
+  ```
+
+  这意味着：指向 `test2.b` 的指针仍然指向现在已经在  `test1` 中的一个旧位置。那么对象 `test2` 将不再是一个自引用结构，因为它内部的指针指向了它之外的对象的一个字段。也就是说，`test2.b` 的生命周期与 `test2` 自身的生命周期绑定这一事实将不再成立。
+
+  如果你不相信的话，至少下面这段代码将会说服你：
+
+  ```rust
+  fn main() {
+      let mut test1 = Test::new("test1");
+      test1.init();
+      let mut test2 = Test::new("test2");
+      test2.init();
+  
+      println!("a: {}, b: {}", test1.a(), test1.b());
+      std::mem::swap(&mut test1, &mut test2);
+      test1.a = "I've totally changed now!".to_string();
+      println!("a: {}, b: {}", test2.a(), test2.b());
+  
+  }
+  ```
+  
+  其结果为：
+  
+  ```rust
+  a: test1, b: test1
+  a: test1, b: I've totally changed now!
+  ```
+  
+  很明显，在交换 `test1/test2` 绑定的数据之后，`test2.b` 不再指向 `test2.a` 而是指向了 `test1.a`。当然，这不是我们所期望的。现在虽然还没有什么致命的错误，但是我们不难想象它的实际的程序中很容易出现。
+  
+  我画了一张图来展示到底发生了什么：
+  
+  ![](swap_problem.jpg)
+  
+  起初，`test1` 被放在 $\mathtt{0x1001}$ 上，位于 $\mathtt{0x1002}$ 的 `test1.a` 指向堆上的一段位于 $\mathtt{0x1111}$ 的数据，位于 $\mathtt{0x1003}$ 的 `test1.b` 指向位于 $\mathtt{0x1002}$ 的 `test1.a`；同理， `Test2` 被放在 $\mathtt{0x2001}$ 上，位于 $\mathtt{0x2002}$ 的 `test2.a` 指向堆上的一段位于 $\mathtt{0x2222}$ 的数据，位于 $\mathtt{0x2003}$ 的 `test2.b` 指向位于 $\mathtt{0x2002}$ 的 `test2.a`。
+  
+  然而，交换之后，位于 $\mathtt{0x2001}$ 的 `test1` 的两个字段分别指向 $\mathtt{0x1111,0x1002}$；位于 $\mathtt{0x1001}$ 的 `test2` 的两个字段分别指向 $\mathtt{0x2222,0x2002}$。检查一下，`test2.b` 现在的确指向了 `test1.a`！同时 `test1.b` 也指向了 `test2.a`。因此，在交换之后 `test1/test2` 的自引用性质都被破坏。
+  
+## 在栈上 Pin
+
+* 现在我们换成 `Pin` 来解决这个问题。现在代码会变成这个样子：
+
+  ```rust
+  use std::pin::Pin;
+  use std::marker::PhantomPinned;
+  
+  #[derive(Debug)]
+  struct Test {
+      a: String,
+      b: *const String,
+      _marker: PhantomPinned,
+  }
+  
+  
+  impl Test {
+      fn new(txt: &str) -> Self {
+          let a = String::from(txt);
+          Test {
+              a: String::from(txt),
+              b: std::ptr::null(),
+              _marker: PhantomPinned, // This makes our type `!Unpin`
+          }
+      }
+      fn init<'a>(self: Pin<&'a mut Self>) {
+          let self_ptr: *const String = &self.a;
+          let this = unsafe { self.get_unchecked_mut() };
+          this.b = self_ptr;
+      }
+  
+      fn a<'a>(self: Pin<&'a Self>) -> &'a str {
+          &self.get_ref().a
+      }
+  
+      fn b<'a>(self: Pin<&'a Self>) -> &'a String {
+          unsafe { &*(self.b) }
+      }
+  }
+  ```
+
+  我们在 `Test` 中新增一个 `PhantomPinned` 字段，使得 `Test` 被 `!Unpin` 标记。同时在原先的 `init,a,b` 函数中，将原先传入的 `&Self, &mut Self` 外面用 `Pin` 进行包裹
+
+  
 
 
 
