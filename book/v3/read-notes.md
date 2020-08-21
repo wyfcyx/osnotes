@@ -4,23 +4,57 @@
 
 ## logs
 
-### 2020-07-14, Tuesday
+### 2020-07-14
 
 今天能在 K210 上跑 lab0，而且实现了一条命令完成构建+烧写+终端连接。
 
 明天继续搞下面的 lab，估计调试器也能到了，再搞一下硬件调试。
 
-### 2020-07-15, Wednesday
+### 2020-07-15
 
 @luojia65 提醒我在裸机环境下 Rust 并不依赖底层的 C 运行时，之前确实有些混淆了。
 
 开始看接下来的章节。
 
-### 2020-07-16, Thursday
+### 2020-07-16
 
 昨天一直忙着搭博客还有测试 Sipeed RV Debugger，结果还都不怎么满意...
 
 今天回归正轨赶紧把 v3 看完...
+
+### 2020-08-19
+
+尝试把 rCore(Tutorial) 移植到 Ariane 平台，然后发现自己太过 naive 了，有很多问题根本不知道如何解决，最后果然直接卡住了...
+
+所以现在继续回来做 K210 上的移植了（真香~）
+
+但是，弄一套开源软核其实也是很有趣的...就是怕能力所限搞不了这么多东西。而且去读总线的规范文档也是一件麻烦事情。真期待有朝一日有大佬能做一套 RV64 tutorial，这样的话就可以学习一个了。
+
+对于 K210 上面的一堆外设很好奇，于是专门去了解了一下。
+
+SPI（Serial Peripheral Interface）也就是串行总线接口，跟我们常提到的串口，其实和 UART 也即通用异步收发器有着很多相似之处。UART 没有时钟，收发双方约定波特率以及起始、停止位还有校验位作为协议。从而收、发在时间上可以做到不同步，故而称为异步。而 SPI 是采用同步传输，有一根时钟线用来对数据线上的串行数据进行同步，仅在时钟的上升/下降沿数据有效。注意两个 SPI 设备进行通信时，时钟信号总是由一方传给另外一方，二者分别称为 Master 和 Slave。据说它是全双工的，也有一根 SS（Slave Select）线来使一个 Master 可以连接到多个 Slaves 并在同一时间只能选择其中一个与之通信。现在大抵能够理解到底什么叫“抢占总线”了。我是在[这里](https://learn.sparkfun.com/tutorials/serial-peripheral-interface-spi/all#:~:text=Serial%20Peripheral%20Interface%20(SPI)%20is,you%20wish%20to%20talk%20to.)学习 SPI 的。
+
+K210 上的另外一种总线叫做 APB（Advanced Peripheral Bus）。事实上它属于 ARM 发明的一种总线架构 AMBA（Advanced Microcontroller Bus Architecture），其规范已经发布了多个版本。APB 是在第一版中被提出的，而 AXI3 和 AXI4 分别在该规范的第三、四版中被提出。
+
+当然，还有我们最为熟知的一种总线 USB（Universial Serial Bus），在这里就不多提了。
+
+那么在 K210 上总线又是个什么架构呢？似乎之前 @luojia65 在群里面给过一张国外老哥破解的图片：
+
+<img src="k210-clock-tree.jpg" style="zoom:50%;" />
+
+这里面有几个 PLL（Phase-Locked Loop），也就是锁相环。但是我对于模电的知识实在是早就忘光了。稍微找了一点资料来看，PLL 的大概用法是输入一个稳定但是在传输过程中已经有损失的晶振信号，得到一个与之频率、相位相同的信号。应该不是这样的吧，如果有人看到了我的口胡请不要当真。谢谢！
+
+现在启动的玩法是：基于 BIOS 或者 UEFI，寻找可启动的设备（光盘或者磁盘），内核代码/数据应该是和用户文件系统放在不同的分区里面，然后在启动的时候 bootloader 将启动分区里面的内核代码/数据复制到 RAM 的相应位置，内核启动之后再次读取分区表来加载文件系统。大概应该是这么回事来着。
+
+视角回到 K210 上，如果不考虑修改 ISP 的话，那么 K210 上 bootloader 的功能比较固定，就是从 Flash 上拷贝一个镜像到 RAM 上，随后跳转到 0x80000000，也就是 OpenSBI 或者其他 SEE 的所在地。这样的话，受到 bootloader 的限制，分区表大概率是搞不起来的。除了将文件系统直接打包进内核里面，放在 Flash 的另一个位置需要一个传给内核的参数（如设备树），全盘放在 SD 卡中倒是可以。
+
+那么块设备驱动到底是放在 M 态还是 S 态呢？这件事情暂时还没有定论。我忽然想起一点，从之前的实践经验来看最好将外设中断放在 M 态处理来规避一些奇怪的错误。最要命的是必须在 M 态完全处理完毕。这给设计带来了极大的困难。
+
+大概可以给 SBI 增加一个拓展调用，比如 `register_irq`，参数分别是 IRQ ID，处理函数，需要被修改的数据结构指针...?
+
+比如说串口的经典操作：当收到字符的时候，需要将字符放入一个队列并且唤醒当前被阻塞的进程，这显然不是在参数里面放一个指针就能解决的...其实总结起来就是一个问题，如何在启用 MMU 的情况下实现在 M 态调用 S 态函数？现在的情形还比较简单，因为虚拟地址与物理地址之间有着固定的偏移量。（我们得庆幸这不是用户态中断！）所以我们还真不一定要查页表。但是毫无疑问，感觉这个方向也是蛮有意思的嘿嘿。
+
+这明显比直接在 sbi 里面处理要强多了。反正它们都不能有返回值。
 
 ## 勘误
 
@@ -676,56 +710,338 @@ fork 下来，准备看着文档从头来一遍
   3. 至于 `PageTableTracker` 的生命周期又如何呢？那我们就来看映射算法的核心部分是如何使用 `PageTableTracker` 的。
   
 * 开始实现内核重映射。
-  
+
   加入了 `Segment` 类表示一段以同样方式映射到物理内存（线性映射或页分配映射）、权限相同的一段虚拟地址空间。自然，其中需要保存映射类型、以 `Range` 来描述的虚拟地址区间、以及权限。
-  
+
   `Segment` 实现的功能有：通过 `page_range` 获得一个虚拟页号的 `Range`；以及通过 `mapper_iter` 获得一个映射到的物理页号的迭代器，这个只有 `Linear` 才有，`Framed` 仅在 `Segment` 内是不知道都映射到哪里去了的。现下倒是还不知道这两个接口是干什么的。
-  
+
   `Mapping` 类代表一颗页表树（也即一个完整的映射，或者说一个虚拟地址空间的一个可以使用的子集），于是：
-  
+
   1. 自然要有三级页表所在的物理页号，这样就可以找到所有页表了。
-  
+
   2. 同时，我们还希望 `Mapping` 类能够管理所有相关页表的生命周期，当这个映射被销毁（这种情况可能仅限于用户进程生命周期结束，合理猜测 `Mapping` 作为用户进程内核对象的一个成员而存在）时，相关的所有的页表所在的物理页面亦会被回收。由此，我们将 `Vec<PageTableTracker>` 放到 `Mapping` 里面。
-  
+
   3. 此外，还注意到 `Mapping` 中含有 `VecDeque<(VirtualPageNumber, FrameTracker)>`，这个也暂时不知道作甚么用。看起来是记录下从虚拟页到实际映射到的物理页的映射，这种做法以消耗一定内存空间为代价，...
-  
+
      然而，这样做有必要吗？
-  
+
   `Mapping` 实现的功能有：
-  
+
   * `new`：建立一个新的映射；
-  
+
   * `find_entry(&mut self, VirtualPageNumber) -> &mut PageTableEntry`：从虚拟地址找到对应的三级页表项，若有必要的话则依次新建次级页表。
-  
+
     当然，它是为了映射的扩充操作而存在的，找到页表项之后，我们即可将其中的标志位进行修改。此时，需要刷新 TLB 吗？也许在映射的扩充过程中并不必这样做，因为相应的虚拟地址在 TLB 中并不存在。
-  
+
     这样想来，单核环境下，需要通过 `sfence.vma` 刷新 TLB 的大致只有三个场景：
-  
+
     1. 在内核初始映射结束之后，TLB 尚未被初始化，可能导致映射错误（然而，目前并未出错）
     2. 在进程切换的过程中，由于切换了页表，之前 TLB 中的内容错误，需要将 TLB 全部刷新
     3. 在某个映射仍然存在，但它通过系统调用被缩减，此时可能需要将被缩减的部分对应的 TLB 进行刷新
-  
+
     **于此插一句，在文档写作时可能需要注意：究竟什么东西放在内核里面（内核数据结构），什么东西放到内核外（只是仅仅放到内存中，如用户进程的代码数据）；同时，究竟什么东西放到内存中，什么东西放到外存中，如此比对一下，或者给出清晰的图示，可能会更容易让人理解。**
-  
+
     实现的话，首先依次取得各级索引，然后从 `root_ppn` 开始逐次向下查，将以下过程重复三次：
-  
+
     待查的页表是以物理页号 `PhysicalPageNumber` 的形式给出的，首先要将其转换（`deref` 函数是一个非常自然的实现）为页表 `PageTable`，它是一个页表项 `PageTableEntry` 的大数组，从中自然可以根据各级索引查到对应的页表项。看到页表项之后，首先检查其合法标志位 `VALID`，如果合法的话就可以直接找到下一级页表所在的物理页号；否则需要分配一个物理页帧，将其物理页号写在当前的页表项相应字段中，这个物理页帧也将用来放置下一级页表，并修改页表项的标志位能够让它成为一个合格的中转站。
-  
+
     这样，从一个物理页号起始，到下一个物理页号终止，整个过程完毕。该过程重复三次之后，输出的物理页号将是输入的虚拟页实际映射到的物理页帧的页号。
-  
+
     但在这个函数中，需要实现的功能略为简单，我们只需返回最后一级页表项的可变引用即可。
-  
+
     > 暴露出根本不会 Rust...
     >
     > `vec!` 宏要通过 `alloc::vec` 来引用，而 `Vec` 要通过 `alloc::vec::Vec` 来引用。
     >
     > 发现 `PhysicalAddress` 能够 `deref_kernel` 到任意类型，而 `PhysicalPageNumber` 只能 `deref_kernel` 到 `&static' mut [u8; 4096]`。所以 `PhysicalPageNumber` 的 `deref_kernel` 似乎并非用于页表。
-  
+
     **恶心。我觉得现在已经有点想吐了。先去看一下 async Rust。**
+    
+    
+
+## 外设驱动移植篇
+
+### sdcard
+
+* 发现 k210-sdk-stuff 里面的 sdtest 是可以跑的，但是看起来有一些复杂，如何最小化的移植进来呢？
+
+  sdtest 里面用到了很多 k210-shared 本地库提供的功能。
+
+  我们大概需要搬运的是：
+
+  1. SPI 驱动；
+  2. GPIO 引脚复用；
+  3. PLL 频率设置；
+  4. SDcard 本身。
+
+  简单看一下。
+
+  首先是 sdcard 类型的定义：
+
+  ```rust
+  pub struct SDCard<'a, SPI> {
+      spi: SPI,
+      spi_cs: u32,
+      cs_gpionum: u8,
+      //dmac: &'a DMAC,
+      //channel: dma_channel,
+  }
+  ```
+
+  当然，这里简单起见我们不考虑 DMA 支持。（那么怎么搞一种其他的外部中断呢？
+
+  结构体里面存放 SPI 实例，sdcard 在该 SPI 上的 slave 编号，以及该 cs 被复用到哪个 GPIO 上。
+
+  后面是几个要用到的结构体类型：
+
+  ```rust
+  /** SD commands */
+  #[repr(u8)]
+  #[derive(Debug, PartialEq, Eq, Copy, Clone)]
+  pub enum CMD {
+      /** Software reset */
+      CMD0 = 0,
+      ...
+      /** Enable/disable CRC check */
+      CMD59 = 59,
+  }
+  
+  /* 不同的初始化错误类型 */
+  #[derive(Debug, Copy, Clone)]
+  pub enum InitError {
+      CMDFailed(CMD, u8),
+      CardCapacityStatusNotSet([u8; 4]),
+      CannotGetCardInfo,
+  }
+  
+  /**
+   * Card Specific Data: CSD Register
+   */
+  #[derive(Debug, Copy, Clone)]
+  pub struct SD_CSD {
+      pub CSDStruct: u8,        /* CSD structure */
+      ...
+      pub Reserved4: u8,           /* always 1*/
+  }
+  
+  /**
+   * Card Identification Data: CID Register
+   */
+  #[derive(Debug, Copy, Clone)]
+  pub struct SD_CID {
+      pub ManufacturerID: u8, /* ManufacturerID */
+      ...
+      pub Reserved2: u8,      /* always 1 */
+  }
+  
+  /**
+   * Card information
+   */
+  #[derive(Debug, Copy, Clone)]
+  pub struct SD_CardInfo {
+      pub SD_csd: SD_CSD,
+      pub SD_cid: SD_CID,
+      pub CardCapacity: u64,  /* Card Capacity */
+      pub CardBlockSize: u64, /* Card Block Size */
+  }
+  ```
+
+  定义了 sdcard 支持的操作类型，声明了两个重要的大设备寄存器 CSD/CID 的内存布局，此外还给出了 sdcard 元数据的描述。
+
+  sdcard 需要支持的操作是：
+
+  ```rust
+  // 将高速 GPIO 对应的 Pin 拉高或拉低
+  // 相关方法 gpiohs::set_pin
+  fn CS_HIGH(&self) { gpiohs::set_pin(self.cs_gpionum, true); }
+  fn CS_LOW(&self) { gpiohs::set_pin(self.cs_gpionum, false); }
+  // 用到了设置 SPI 的频率的方法 spi::set_clk_rate
+  fn HIGH_SPEED_ENABLE(&self) { self.spi.set_clk_rate(10000000); }
+  // 新增函数 gpiohs::set_direction
+  fn lowlevel_init(&self) {
+      gpiohs::set_direction(self.cs_gpionum, gpio::direction::OUTPUT);
+      self.spi.set_clk_rate(200000);
+  }
+  // 向 SPI 总线上写一段数据
+  // 新增函数 spi::configure, spi::send_data
+  fn write_data(&self, data: &[u8]);
+  // 从 SPI 总线上读一段数据
+  // 新增函数 spi::recv_data
+  fn read_data(&self, data: &mut [u8]);
+  
+  // 与 sdcard 的交互以 transaction 为单位，以 send_cmd 起始，以 end_cmd 为终。
+  /*
+   * Send 5 bytes command to the SD card.
+   * @param  cmd: The user expected command to send to SD card.
+   * @param  arg: The command argument.
+   * @param  crc: The CRC.
+   * @retval None
+   */
+  // 向 sdcard 发送命令
+  // 其逻辑为：首先设置 GPIOHS Self::CS_LOW，随后写一段数据 Self::write_data
+  fn send_cmd(&self, cmd: CMD, arg: u32, crc: u8);
+  /* Send end-command sequence to SD card */
+  // 结束命令的发送
+  // 其逻辑为：首先设置 GPIOHS Self::CS_HIGH，随后发送单个字节 0xff Self:write_data
+  fn end_cmd(&self);
+  
+  /*
+  * Returns the SD response.
+  * @param  None
+  * @retval The SD Response:
+  *         - 0xFF: Sequence failed
+  *         - 0: Sequence succeed
+  */
+  // 获取 sdcard 的返回值
+  // 逻辑为：调用 0x0fff 次 Self::read_data，每次读 1 字节，直到结果非 0xff，若次数用尽超时
+  fn get_response(&self) -> u8;
+  
+  /*
+  * Get SD card data response.
+  * @param  None
+  * @retval The SD status: Read data response xxx0<status>1
+  *         - status 010: Data accecpted
+  *         - status 101: Data rejected due to a crc error
+  *         - status 110: Data rejected due to a Write error.
+  *         - status 111: Data rejected due to other error.
+  */
+  // 暂时不太懂在干什么，总之只是在多次调用 Self::read_data
+  fn get_dataresponse(&self) -> u8;
+  
+  /*
+  * Read the CSD card register
+  *         Reading the contents of the CSD register in SPI mode is a simple
+  *         read-block transaction.
+  * @param  SD_csd: pointer on an SCD register structure
+  * @retval The SD Response:
+  *         - `Err()`: Sequence failed
+  *         - `Ok(info)`: Sequence succeed
+  */
+  // 逻辑：首先 Self::send_cmd(CMD9)，然后通过 Self::get_response 判断是否出错并终止 Self::end_cmd。如果正常的话就 Self::read_data 从 SPI 上读 18 字节并终止 Self::end_cmd。
+  // 最后的返回值是对读到的 18 字节的封装。
+  fn get_csdregister(&self) -> Result<SD_CSD, ()>;
+  
+  /*
+  * Read the CID card register.
+  *         Reading the contents of the CID register in SPI mode is a simple
+  *         read-block transaction.
+  * @param  SD_cid: pointer on an CID register structure
+  * @retval The SD Response:
+  *         - `Err()`: Sequence failed
+  *         - `Ok(info)`: Sequence succeed
+  */
+  // 与 get_csdregister 逻辑相同，只是寄存器不同。
+  fn get_cidregister(&self) -> Result<SD_CID, ()>;
+  
+  /*
+  * Returns information about specific card.
+  * @param  cardinfo: pointer to a SD_CardInfo structure that contains all SD
+  *         card information.
+  * @retval The SD Response:
+  *         - `Err(())`: Sequence failed
+  *         - `Ok(info)`: Sequence succeed
+  */
+  // 逻辑：通过 get_csd/cidregister 初始化结构体中的相应部分，CardBlockSize/CardCapacity 从 csd 中得到
+  fn get_cardinfo(&self) -> Result<SD_CardInfo, ()>;
+  
+  /*
+  * Initializes the SD/SD communication in SPI mode.
+  * @param  None
+  * @retval The SD Response info if succeeeded, otherwise Err
+  */
+  // 终于准备开始初始化啦！
+  // 首先是一波调用 lowerlevel_init, CS_HIGH, write_data 的奇妙操作；
+  // 然后依次进行若干次 transactions，调用的函数有 
+  // send_cmd/end_cmd/get_response/read_data
+  // 如果上面通过的话我们重新提高频率 HIGH_SPEED_ENABLE
+  // 然后尝试调用 get_cardinfo，初始化完成
+  pub fn init(&self) -> Result<SD_CardInfo, InitError>;
+  
+  /*
+  * Reads a block of data from the SD.
+  * @param  data_buf: slice that receives the data read from the SD.
+  * @param  sector: SD's internal address to read from.
+  * @retval The SD Response:
+  *         - `Err(())`: Sequence failed
+  *         - `Ok(())`: Sequence succeed
+  */
+  // 读一个 sector，块设备驱动的核心函数之一。
+  // 发现里面用到了 read_data_dma，不用行不行啊
+  // 看了一下官方 sdk，发现这个函数里面是没用 DMA 的，所以说不定可以？
+  // 稍微试了一下，就改出了一个不用 DMA 通过 I/O 测试的原型
+  // 所以用到的函数之后 send_cmd/end_cmd/get_response/read_data 这些东西
+  pub fn read_sector(&self, data_buf: &mut [u8], sector: u32) -> Result<(), ()>;
+  // 写一个 sector，块设备驱动的核心函数之一。
+  // 同样也可以不依赖 write_data_dma
+  /*
+  * Writes a block to the SD
+  * @param  data_buf: slice containing the data to be written to the SD.
+  * @param  sector: address to write on.
+  * @retval The SD Response:
+  *         - `Err(())`: Sequence failed
+  *         - `Ok(())`: Sequence succeed
+  */
+  pub fn write_sector(&self, data_buf: &[u8], sector: u32) -> Result<(), ()>
+  ```
+
+  所以只要把这些代码粘贴过去的话，`read_sector` 和 `write_sector` 就搞定了，和 BlockDriver 接口的契合度应该也会比较高。
+
+  是时候看看 sdcard 依赖的其他 soc 了。根据刚才的总结，还需要以下函数：
+
+  ```rust
+  gpiohs::set_pin;
+  gpiohs::set_direction;
+  spi::set_clk_rate;
+  spi::configure;
+  spi::send_data;
+  spi::recv_data;
+  ```
+
+  此外还有主函数中要使用到的
+
+  ```rust
+  sysctl::pll_set_freq;
+  fpioa::set_function;
+  fpioa::set_io_pull;
+  ```
+
+  当然，还有比较诡异的其他初始化：
+
+  ```rust
+  // 里面也许有 SPI0 初始化
+  let spi = p.SPI0.constrain();
+  // 也许 GPIOHS 和 FPIOA 也需要初始化？
+  ```
+
+  比较麻烦的事情是 `k210-hal` 是一个自动生成的巨大文件，而且里面很有可能用到 M 态的东西，很烦人。所以如果比较简单的话可以尝试绕开它。
+
+  我们先不管初始化，看看剩下的东西好不好办。
+
+  首先是 GPIOHS。相关的 `set_pin, set_direction` 看起来都是简单修改一下 MMIO 的事情。
+
+  具体的映射地址就需要到 sdk 中去查阅了。
+
+  接下来是 SPI。看起来好复杂，但是只用到了 sysctl 里面的若干方法，剩下的依然是 MMIO。已经有点害怕了。
+
+  然后是 FPIOA。还是只要照着 sdk 搞定 MMIO 就行了。
+
+* 后来发现直接将 k210-sdk-stuff 里面所有相关的文件按照原路径结构放进去就能编译通过了。
+
+  然而运行的时候直接非法指令，原因是尝试在 S 态读 mstatus 寄存器。
+
+  该行为来源于 k210-pac，在代码中体现为 Peripherals::take，它被 riscv::interrupt::free 包裹，代表一段临界区，因此需要读写 mstatus。但我们目前完全不需要它，因为根本没有中断会被触发。
+
+  然后我重新弄了一个本地 k210-pac，将该死的 free 去掉了。
+
+  但是现在改完 pll 频率之后发现串口出乱码了...
+
+  我们需要适当修改 UARTHS 的 DIV 字段，改成它的频率除以 115200 再减 1。而它的频率与 SYSCTL_CLOCK_CPU 频率相同，而 CPU 的频率又取决于 In0 频率或是 PLL0 频率以及一个选择信号还有阈值。
+
+  其实不用自己手动改的，就硬复制就行了。
+
+  最后的问题是 Peripherals::take 第二次调用会返回 None 导致错误，看了一下又是 k210-pac 里面的奇妙设置，直接把它移除。现在看起来能工作了，而且提供了 `sdcard_sector_write/read` 这样好用的接口。接下来的事情暂且交给 xwh。
   
   
-  
-   
   
   
 
