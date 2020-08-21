@@ -28,5 +28,57 @@ fn swap_pins<T>(x: Pin<&mut T>, y: Pin<&mut T>) {
 
 注意固定行为（Pinning）和 `Unpin` 只会影响指针类型 `P` 指向的类型 `P::Target`，而并不会影响被包裹在 `Pin` 里面的指针 `P` 类型自身。比如，无论 `Box<T>` 有没有实现 `Unpin` 都不会影响到 `Pin<Box<T>>` 的行为。
 
+## Example: 自引用结构
+
+```rust
+use std::pin::Pin;
+use std::marker::PhantomPinned;
+use std::ptr::NonNull;
+
+// 这是一个自引用结构，因为它的 slice 字段指向它自己的 data 字段。
+// 我们不能用普通的引用来让编译器理解这种结构，因为它是违反借用规则的。
+// 所以我们换成一个裸指针，当然它不能是空指针，因为我们知道它会指向它自己的 data 字段。
+struct Unmovable {
+    data: String,
+    slice: NonNull<String>,
+    _pin: PhantomPinned,
+}
+
+impl Unmovable {
+    // 为了确保当此函数退出的时候 data 不会被 move
+    // 我们将它放在堆上，从而在这个对象的生命周期之内它都会存在
+    // 并且访问它的唯一方式便是通过一个指向它的指针
+    fn new(data: String) -> Pin<Box<Self>> {
+        let res = Unmovable {
+            data,
+			// we only create the pointer once the data is in place
+            // otherwise it will have already moved before we even started
+            slice: NonNull::dangling(),
+            _pin: PhantomPinned,
+        };
+        let slice = NonNull::from(&boxed.data);
+        // 我们知道它是安全的，因为改变其中一个字段并不会改变整个结构体在内存中的位置
+        unsafe {
+            let mut_ref: Pin<&mut Self> = Pin::as_mut(&mut boxed);
+            Pin::get_unchecked_mut(mut_ref).slice = slice;
+        }
+        boxed
+    }
+}
+
+let unmoved = Unmovable::new("hello".to_string());
+// The pointer should point to the correct location,
+// so long as the struct hasn't moved.
+// Meanwhile, we are free to move the pointer around.
+let mut still_unmoved = unmoved;
+assert_eq!(still_unmoved.slice, NonNull::from(&still_unmoved.data));
+
+// Since our type doesn't implement Unpin, this will fail to compile:
+// let mut new_unmoved = Unmovable::new("world".to_string());
+// std::mem::swap(&mut *still_unmoved, &mut *new_unmoved);
+```
+
+
+
 
 

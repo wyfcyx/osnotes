@@ -1185,7 +1185,7 @@
   
   然而，交换之后，位于 $\mathtt{0x2001}$ 的 `test1` 的两个字段分别指向 $\mathtt{0x1111,0x1002}$；位于 $\mathtt{0x1001}$ 的 `test2` 的两个字段分别指向 $\mathtt{0x2222,0x2002}$。检查一下，`test2.b` 现在的确指向了 `test1.a`！同时 `test1.b` 也指向了 `test2.a`。因此，在交换之后 `test1/test2` 的自引用性质都被破坏。
   
-## 在栈上 Pin
+## 将数据固定到栈上
 
 * 现在我们换成 `Pin` 来解决这个问题。现在代码会变成这个样子：
 
@@ -1216,6 +1216,7 @@
           this.b = self_ptr;
       }
   
+      // Pin 也是一层智能指针，实现了 Deref 和 DerefMut
       fn a<'a>(self: Pin<&'a Self>) -> &'a str {
           &self.get_ref().a
       }
@@ -1224,13 +1225,326 @@
           unsafe { &*(self.b) }
       }
   }
+```
+  
+我们在 `Test` 中新增一个 `PhantomPinned` 字段，使得 `Test` 被 `!Unpin` 标记。同时在原先的 `init,a,b` 函数中，将原先传入的 `&Self, &mut Self` 外面用 `Pin` 进行包裹。
+  
+  注意通过 `get_uncheck_mut` 可以将 `Pin<&mut T>` 转成 `&mut T`。
+  
+  这样我们就可以将它固定在**栈**上，由于该类型没有实现 `Unpin`，这个过程免不了 unsafe。
+  
+  这里我们用了一些小技巧， 其中之一就是 `init` 的必要性。如果我们想去进一步改进并去掉 unsafe，我们就需要将它固定在堆上。我们稍后将进一步解释。
+  
+  让我们来把整个程序跑起来，看看会发生什么：
+  
+  ```rust
+  pub fn main() {
+      // 在我们初始化之前，test1 可以被安全地移动
+      let mut test1 = Test::new("test1");
+      // 注意我们如何将 test1 隐藏起来防止它被第二次访问
+      let mut test1 = unsafe { Pin::new_unchecked(&mut test1) };
+      Test::init(test1.as_mut());
+  
+      // 对于固定到栈上的情况，我们首先创建原结构体 T
+      // 随后通过 Pin::new_unchecked(&mut T) -> Pin<&mut T> 得到访问被绑定数据的指针
+      // 之后在初始化自引用指针的时候，可以通过 get_unchecked_mut 将 Pin 去掉得到 &mut T
+      let mut test2 = Test::new("test2");
+      let mut test2 = unsafe { Pin::new_unchecked(&mut test2) };
+      Test::init(test2.as_mut());
+  
+      // 通过 as_ref 拿到 Pin<&P::Target>
+      println!("a: {}, b: {}", Test::a(test1.as_ref()), Test::b(test1.as_ref()));
+      println!("a: {}, b: {}", Test::a(test2.as_ref()), Test::b(test2.as_ref()));
+  }
+  ```
+  
+  看起来它的输出很正常：
+  
+  ```rust
+  a: test1, b: test1
+  a: test2, b: test2
+  ```
+  
+  现在，我们试试用现在的方法来处理那个困扰了我们很长时间的问题：
+  
+  ```rust
+  pub fn main() {
+      let mut test1 = Test::new("test1");
+      let mut test1 = unsafe { Pin::new_unchecked(&mut test1) };
+      Test::init(test1.as_mut());
+  
+      let mut test2 = Test::new("test2");
+      let mut test2 = unsafe { Pin::new_unchecked(&mut test2) };
+      Test::init(test2.as_mut());
+  
+      println!("a: {}, b: {}", Test::a(test1.as_ref()), Test::b(test1.as_ref()));
+      // 通过 as_mut 拿到 Pin<&mut P::Target>
+      std::mem::swap(test1.get_mut(), test2.get_mut());
+      println!("a: {}, b: {}", Test::a(test2.as_ref()), Test::b(test2.as_ref()));
+  }
+  ```
+  
+  很不幸的是，它不能通过编译！
+  
+  ```rust
+     Compiling playground v0.0.1 (/playground)
+  error[E0277]: `std::marker::PhantomPinned` cannot be unpinned
+    --> src/main.rs:11:26
+     |
+  11 |     std::mem::swap(test1.get_mut(), test2.get_mut());
+     |                          ^^^^^^^ within `Test`, the trait `std::marker::Unpin` is not implemented for `std::marker::PhantomPinned`
+     |
+     = note: required because it appears within the type `Test`
+  
+  error[E0277]: `std::marker::PhantomPinned` cannot be unpinned
+    --> src/main.rs:11:43
+     |
+  11 |     std::mem::swap(test1.get_mut(), test2.get_mut());
+     |                                           ^^^^^^^ within `Test`, the trait `std::marker::Unpin` is not implemented for `std::marker::PhantomPinned`
+     |
+     = note: required because it appears within the type `Test`
+  
+  error: aborting due to 2 previous errors
+  
+  For more information about this error, try `rustc --explain E0277`.
+  error: could not compile `playground`.
+  
+  To learn more, run the command again with --verbose.
+  ```
+  
+  这是因为 `Test` 类型（确切的说是里面的 `PhantomPinned` 标记）并没有实现 Unpin，在这种情况下 `Pin<&mut Test>` 保存的数据被固定在内存上不允许被移动。而 `std::mem:swap` 在交换的过程中需要改变两段数据在内存中的位置。这自然不被编译器所允许。
+  
+  > 注意到我们这里做的固定只能将数据固定在当前所在的栈帧上，所以我们不能创建一个自引用结构（此时它被放在栈上）然后将它返回，因为这样的话里面的自引用指针将会失效。
+  >
+  > 如果你将一个对象固定在栈上的话还需要做很多额外的工作。一个经常犯的错误是：忘记将原始的变量隐藏起来，这将导致将 `Pin` drop 掉之后仍然可以访问里面的数据。比如下面的例子：
+  >
+  > ```rust
+  > fn main() {
+  >    let mut test1 = Test::new("test1");
+  >    let mut test1_pin = unsafe { Pin::new_unchecked(&mut test1) };
+  >    Test::init(test1_pin.as_mut());
+  >    drop(test1_pin);
+  > 
+  >    let mut test2 = Test::new("test2");
+  >    mem::swap(&mut test1, &mut test2);
+  >    println!("Not self referential anymore: {:?}", test1.b);
+  > }
+  > ```
+
+## 将数据固定到堆上
+
+* 为了让本章更完整，让我们试着将一些 unsafe 操作替换掉。最主要的区别是我们将数据固定在堆上而不是栈上。自然，这会产生一些分配堆内存的开销。
+
+  ```rust
+  use std::pin::Pin;
+  use std::marker::PhantomPinned;
+  
+  #[derive(Debug)]
+  struct Test {
+      a: String,
+      b: *const String,
+      _marker: PhantomPinned,
+  }
+  
+  impl Test {
+      fn new(txt: &str) -> Pin<Box<Self>> {
+          let t = Test {
+              a: String::from(txt),
+              b: std::ptr::null(),
+              _marker: PhantomPinned,
+          };
+          // Box::pin 将返回一个 Pin<Box<T>>
+          let mut boxed = Box::pin(t);
+          // Pin::as_ref 将返回一个 Pin<&T>
+          let self_ptr: *const String = &boxed.as_ref().a;
+          // Pin::as_mut 将返回一个 Pin<&mut T>
+          // get_unchecked_mut 将把 Pin<&mut T> 转化为 &mut T，这是 unsafe 的
+          unsafe { boxed.as_mut().get_unchecked_mut().b = self_ptr };
+  
+          boxed
+      }
+  
+      fn a<'a>(self: Pin<&'a Self>) -> &'a str {
+          &self.get_ref().a
+      }
+  
+      fn b<'a>(self: Pin<&'a Self>) -> &'a String {
+          unsafe { &*(self.b) }
+      }
+  }
+  
+  pub fn main() {
+      let mut test1 = Test::new("test1");
+      let mut test2 = Test::new("test2");
+  
+      println!("a: {}, b: {}",test1.as_ref().a(), test1.as_ref().b());
+      println!("a: {}, b: {}",test2.as_ref().a(), test2.as_ref().b());
+  }
   ```
 
-  我们在 `Test` 中新增一个 `PhantomPinned` 字段，使得 `Test` 被 `!Unpin` 标记。同时在原先的 `init,a,b` 函数中，将原先传入的 `&Self, &mut Self` 外面用 `Pin` 进行包裹
+  经过修改之后，我们在 `Test` 类之外就看不到任何 unsafe 了！
 
+  事实上，即使是 `!Unpin` 类型的对象，将它固定在堆上也是安全的。这是因为堆与栈不同，它里面的数据有着稳定的地址，且不会收到函数的生命周期影响。
+
+  对于提供给用户的 API 来说，并没有必要特别注意保证自引用结构一直合法。
+
+  此外，也有一些其他的方法能够有保证的将数据固定在栈上，但是目前你需要使用一个像 [pin_project](https://docs.rs/pin-project/0.4.23/pin_project/) 之类的 crate 来做这件事情。
+
+## Pinning 的若干实战经验
+
+1. 如果 `T: Unpin`（默认情况下），那么 `Pin<'a, T>` 与 `&'a mut T` 完全等价。也就是说，`Unpin` 意味着这种类型即使外面包了一层 `Pin` ，仍然可以被移动。从 `Pin` 对于这种类型是没有影响的。
+2. 如果 `T: !Unpin`，从一个被固定的 `T` 中获取 `&mut T` 是 unsafe 的。也就是说，API 的*使用者*只能选择写 unsafe 代码，才能获取一个指向被固定的 `!Unpin` 类型的数据的指针移动这些数据的位置。但是不好的一点是，如果我们只是想修改其中的部分数据而不是要移动，也只能通过 unsafe 才能拿到可变借用。也许编译器目前没有办法区分这两种行为。
+3. Pinning 对于内存分配并未做任何特殊的处理，比如把数据丢到某块“只读内存”或者其他有趣的做法，这些都是不存在的。它只是基于类型系统来阻止一些特定的操作。
+4. 标准库中的大部分类型实现了 `Unpin`，对于你能在 Rust 中见到的绝大多数“普通”类型也是这样。当然，`Future` 和 `Generator` 们是个例外。
+5. `Pin` 最主要的用途就是自引用结构，对于自引用结构的支持是稳定该语法的核心理由。
+6. `!Unpin` 对象背后的实现往往是 unsafe 的。将这种对象固定下来再移动它会造成整个程序的崩溃。在撰写这本书的时候，创建和读取一个自引用结构的字段仍然需要 unsafe。（实现自引用结构的唯一方法是在里面放一个指向自身的裸指针）
+7. 你可以在 nightly Rust 上在启用相关 feature 的情况下给类型加上 `!Unpin` ，或者直接在你的类型上加一个 `std::marker::PhantomPinned` 字段来使得你的类型变成 `!Unpin`。
+8. 你可以将对象固定在堆上或是栈上。
+9. 将一个 `!Unpin` 对象固定在栈上需要 unsafe。
+10. 将一个 `!Unpin` 对象固定在堆上不需要 unsafe。通过 `Box::pin` 你能很方便的做到这一点。
+
+> unsafe 代码并不是像字面上一样“不安全”，它只是不提供那些编译器一般会提供给你的保证。unsafe 实现可能是极其安全的，但是这超出了编译器的认知范围，在它的安全策略中只能认为是不安全的。
+
+### Projection/Structural Pinning
+
+简要地讲，投影（Projection）是一种编程语言术语。如 `mystruct.field1` 就是一种投影。结构化固定（Structural Pinning）是在结构体的字段里面使用 `Pin`。这有一些隐含的问题而且并没有那么容易想明白。所以我提供了相关的文档以供查阅。（译者：好像没有啊？）
+
+### Pin and Drop
+
+`Pin` 能够生效的时间段从对象被固定开始，到它被 drop 结束。在 `Drop` 的实现中你对 `self` 进行了一次可变借用，这意味着当你为可固定的类型实现 `Drop` trait 的时候需要多加小心。
+
+## PIAT
+
+下一章我们终于可以开始实现自己的 `Future` 了！稍作休息，我们即可启程。
+
+## 附录：修复自引用 Generator
+
+* 但是现在，我们避免了使用 `Pin` 的问题。
+
+  ```rust
+  #![feature(optin_builtin_traits, negative_impls)] // 需要实现 `!Unpin	
+  use std::pin::Pin;
   
+  pub fn main() {
+      let gen1 = GeneratorA::start();
+      let gen2 = GeneratorA::start();
+      // 在我们将数据固定之前，我们可以安全的执行下面的交换操作
+      // std::mem::swap(&mut gen, &mut gen2);
+  
+      // 为一个没有实现 `Unpin` 的类型通过 `Pin::new` 来固定它是 unsafe 的。
+      // 但是可以在 safe Rust 的范畴内将这种对象固定到堆上，所以我们这样做来避免 unsafe。
+      // 你可以使用类似 `pin_utils` 的 crate 来在 safe Rust 中将对象固定到栈上，
+      // 要明白它的底层实现使用到了 unsafe，但是经过检查是安全的实现
+  
+      let mut pinned1 = Box::pin(gen1);
+      let mut pinned2 = Box::pin(gen2);
+  
+      // 如果你认为将值固定到栈上是安全的，那么你可以删除注释来换成下面的实现
+      //let mut pinned1 = unsafe { Pin::new_unchecked(&mut gen1) };
+      //let mut pinned2 = unsafe { Pin::new_unchecked(&mut gen2) };
+  
+      if let GeneratorState::Yielded(n) = pinned1.as_mut().resume() {
+          println!("Gen1 got value {}", n);
+      }
+  
+      if let GeneratorState::Yielded(n) = pinned2.as_mut().resume() {
+          println!("Gen2 got value {}", n);
+      };
+  
+      // 下面的代码无法通过编译：
+      // std::mem::swap(&mut gen, &mut gen2);
+      // 下面的代码可以通过编译，但只是简单的交换两个指针，并不影响它们指向的数据，因此并没有任何影响
+      // std::mem::swap(&mut pinned1, &mut pinned2);
+  
+      let _ = pinned1.as_mut().resume();
+      let _ = pinned2.as_mut().resume();
+  }
+  
+  enum GeneratorState<Y, R> {
+      Yielded(Y),
+      Complete(R),
+  }
+  
+  trait Generator {
+      type Yield;
+      type Return;
+      fn resume(self: Pin<&mut Self>) -> GeneratorState<Self::Yield, Self::Return>;
+  }
+  
+  enum GeneratorA {
+      Enter,
+      Yield1 {
+          to_borrow: String,
+          borrowed: *const String,
+      },
+      Exit,
+  }
+  
+  impl GeneratorA {
+      fn start() -> Self {
+          GeneratorA::Enter
+      }
+  }
+  
+  // 这表明这个对象在被固定之后的移动将超出 safe Rust 范围。
+  // 这种情况下，只有作为实现者的我们能“感知”到这一点。
+  // 然而，依赖于我们被固定的数据的其他人将被阻止移动它。
+  // 为了将类型标记为 `!Unpin`
+  // 我们需要启用 feature `#![feature(optin_builtin_traits)]` 并使用 nightly Rust
+  // 当然，直接加上一个 `std::marker::PhantomPinned` 字段也可以
+  impl !Unpin for GeneratorA { }
+  
+  impl Generator for GeneratorA {
+      type Yield = usize;
+      type Return = ();
+      fn resume(self: Pin<&mut Self>) -> GeneratorState<Self::Yield, Self::Return> {
+          // 获取 &mut Self
+          let this = unsafe { self.get_unchecked_mut() };
+              match this {
+              GeneratorA::Enter => {
+                  let to_borrow = String::from("Hello");
+                  let borrowed = &to_borrow;
+                  let res = borrowed.len();
+                  *this = GeneratorA::Yield1 {to_borrow, borrowed: std::ptr::null()};
+  
+                  // 得到自引用的过程很有技巧。
+                  // 在之前我们不能引用 `String` 因为那会指向栈上的一个位置，
+                  // 在这个函数返回之后就会变得不合法。
+                  // 而这里就已经是在堆上的一个位置了。
+                  if let GeneratorA::Yield1 {to_borrow, borrowed} = this {
+                      *borrowed = to_borrow;
+                  }
+  
+                  GeneratorState::Yielded(res)
+              }
+  
+              GeneratorA::Yield1 {borrowed, ..} => {
+                  let borrowed: &String = unsafe {&**borrowed};
+                  println!("{} world", borrowed);
+                  *this = GeneratorA::Exit;
+                  GeneratorState::Complete(())
+              }
+              GeneratorA::Exit => panic!("Can't advance an exited generator!"),
+          }
+      }
+  }
+  ```
 
+  最后我们终于得到了正确的结果：
 
+  ```rust
+  Gen1 got value 5
+  Gen2 got value 5
+  Hello world
+  Hello world
+  ```
+
+* 正如你所看到的那样，这个 API 的使用者：
+
+  1. 要么将值通过 Box 放到堆上固定；
+  2. 要么 unsafe 地将值放到栈上固定。在编写 unsafe 实现的时候，使用者应该知道如果他们后续移动了这个值就会违背他们向编译器做出的保证。
+
+  幸运的是，读完这一章之后你会大致明白当你在一个 async 函数内使用 `yield/await` 关键字的时候，在背后实际发生了什么，以及我们为什么需要 `Pin` 才能跨 `yield/await` 安全地进行借用。
 
   
 
