@@ -183,6 +183,126 @@ src/process/thread.rs:54: 'assertion failed: self.inner().context.is_none()'
 
 注意这个时候 idle 线程的 TCB 应该没有中断上下文的。本来接下来的时钟中断，我们要先 park_current_thread 将当前的中断上下文保存在 idle 线程的 TCB 里面，这时我们期望它这个位置是空的。但是为什么又有了呢？重点在于我们 prepare_next_thread 的时候是直接搞了一份 idle 线程的 clone。
 
+### 给每个 Process 一个自己的 idle thread
+
+这个肯定是必要的。也很简单。
+
+### 真正将多核跑起来
+
+通过在时钟中断处理时 sie::clear_stimer 可以让每个 hart 上的 idle thread 都只会触发一次时钟中断。而后发现进入时钟中断之后 hartid 全部变成 0 了？大概想了一下，应该是在中断上下文里面被覆盖了 QAQAQQQ。
+
+于是现在的做法是 x3（gp） 和 x4（tp） 就不保存和恢复了。
+
+接下来的问题是：
+
+```rust
+triggered interrupt Interrupt(SupervisorTimer) on hart 1
+triggered interrupt Interrupt(SupervisorTimer) on hart 0
+triggered interrupt Interrupt(SupervisorTimer) on hart 2
+context = 0xffffffff82384150 on hart 3
+triggered interrupt Interrupt(SupervisorTimer) on hart 3
+thread_pool lock acquired! on hart 0
+thread_pool lock acquired! on hart 3
+triggered interrupt Exception(UserEnvCall) on hart 0
+src/process/thread.rs:52: 'called `Option::unwrap()` on a `None` value'
+```
+
+看来之前担心的问题确实出现了。也就是说 user_shell 线程 hart0 执行了，却还保留在就绪队列中，然后被 hart3 又抢到了，这就炸了。
+
+因此，我们需要对调度算法进行修改~这回我们要确实的保证每个 hart 只会出现在某个 Processor 的 current_thread、ThreadPool 的 Scheduler 和 sleeping_threads 三个地方中的一个。
+
+主要就是 park_current_thread+prepare_next_thread 吧。 最大的问题是 scheduler::get_next（比如 FIFO）里面是 pop_front 然后 push_back，这样是不行的。我们不要让它在这个时候放回去，而是要在 prepare_next_thread 更换 current_thread 之前把它放回 scheduler 里面去。另外我们应该用不到 remove_thread 了。它发生在 sleep_current_thread 的时候，但我们只需将其丢进 sleeping_threads，然后替换掉 current_thread 即可。
+
+另一件事是关于 idle 线程的处理。我们决不能让 idle 线程进入 scheduler。回想一下，idle 线程为何没有被回收？对了，我们是把它挂在 Processor 下面一个固定的位置的。
+
+这样做之后又有问题：之前 prepare_next_thread 的判断是调度队列和休眠队列里都没有线程就直接 panic，但是在多核情况下很有可能线程的总数比核数要少。所以将这个判断去掉。
+
+然后好像稍微能跑一点了，但是跑了各个用户程序都有问题，手动滑稽。
+
+又尝试跑了一次 hello_world，居然没崩...但是我观察到一个问题：
+
+```rust
+Rust user shell
+>> hello_world
+searching for program hello_world
+Hello world from user mode program!
+thread 6 exit with code 0
+Process 3 exited
+pid = 3
+```
+
+有点搞不清楚 pid = 3 是什么地方输出的。有点奇怪。这个应该是忘了更新用户程序导致的。
+
+然后，连续跑两次 hello_world，总是第一次能跑，第二次就：
+
+```rust
+>> hello_world
+searching for program hello_world
+Hello world from user mode program!
+thread 7 exit with code 0
+Process 3 exited
+src/process/processor.rs:157: 'called `Option::unwrap()` on a `None` value'
+```
+
+
+
+### 为每个线程保存它们曾跑在哪个 hart 上
+
+这样就可以很好地体现多核了。
+
+这个比较简单，只需要在每次 prepare_next_thread 的时候将当前的 hartid 加入到一个 vec 里面即可。
+
+既然如此，我们需要确定什么情况下有可能出现线程切换。
+
+1. 时钟中断的时候，首先 park_current_thread 然后 prepare_next_thread，只需在 prepare_next_thread 的时候处理即可。
+2. 其他中断的时候，如串口中断。一定在 hart0 上收到，但是唤醒的线程需要其他 hart 再去抢，不一定在 hart0 上执行。这个时候它只是将 context 原样返回给 __restore 而已。
+3. syscall 的时候，也只有被阻塞的时候才会 sleep_current_thread 其次 park_current_thread 最后 prepare_next_thread。当然还有一个特殊的 kill syscall，它是 kill_current_thread+prepare_next_thread。
+
+也就是说，只有线程出于某些原因不能再向下执行，将自身从 current_thread 放回到 scheduler 的队尾或者休眠队列的时候，才会出现 prepare_next_thread。
+
+我们想实现的终极功能是：统计一个线程的 kernel/user 使用 CPU 时间占比，以及每个 core 的时间占比。
+
+这挺像是我最近遇到的最像算法的问题了，好好想想给个解决方案。
+
+*Prologue:* 当一个线程被 prepare_next_thread 选中，表示它的一段**固定在某个 hart 上的**执行历程已然开始。
+*Epilogue:* 当一个线程被 prepare_next_thread，表示它的一段**固定在某个 hart 上的**执行历程结束。
+
+目前，*Prologue* 和 *Epilogue* 不能跨越时钟中断。
+
+在 *Prologue* 和 *Epilogue* 中间，可能会出现若干次不会触发 prepare_next_thread 的 trap，导致用户态时间-内核态时间这种模式不断重复。啊这家伙好难实现。我们先把多核跑起来再说吧。
+
+### 实现 wait4 系统调用
+
+目标：user shell 不再 one-shot
+
+注意到 wait 系列 syscall 都是从进程的角度进行考虑的。然而现在我们的实现中进程连 id 都没有...就算加上了进程，我们可以 wakeup 它的第一个线程即可。但是从内存回收的角度，我们知道 Process 是挂在 Thread 下面的，等等，真的是这样的吗？
+
+`Process` 下面挂着 `MemorySet`，它可以负责回收所有的（包括存储页表和存储进程地址空间）的物理页帧；
+
+而 `Thread` 下面挂着 `Process` 和一个上下文 `Context`；
+
+那么 `Thread` 又挂在哪里呢？可以说是挂在 `Processor` 还有 `ThreadPool` 两个地方。当它结束的时候，这两个地方都没有指向它的 `Arc`，于是它就会被自动回收啦！这还蛮巧妙的，回收掉 `Thread` 之后，`Process` 的引用计数会变成 0，于是我们又会去回收 `Process`。也就是说，**Process 确实比 Thread 后回收**。
+
+因为目前这种情况的话是不存在子进程这种东西的...
+
+我们需要注意 wait4 和 clone 以及 execve 三个 syscall 的实际语义，然后进行简化实现。
+
+唉这个东西优先级低一点吧，我们先跑起来再说。
+
+写了一段时间之后，发现了一个死锁的问题。
+
+在用户程序调用 sys_exit 退出之后，会在某个地方调用 kill_current_thread 把当前线程移除，然而问题在于这会移除两个地方，一是 Processor 里面的 current_thread，二是 ThreadPool 里面的 scheduler。如果我们按照这个顺序的话，会在持有 ThreadPool 锁的情况下将当前线程 rc 清零，然后进而触发 Process 的回收，会唤醒终端线程，这又会用到 ThreadPool 的锁，就死锁了。**我们暂时可以调整移除的顺序来规避死锁问题，但是更好的办法是让 `Arc<Thread>` 只出现一次。**
+
+这一步暂时宣告完成。√
+
+### 实现 gettimeofday 系统调用
+
+目标：可以通过执行时间来比较性能
+
+# 委曲求全的实现
+
+1. KERNEL_THREAD 和 PROCESSORS 都是手动展开成 4 个，目前非常不优雅。
+
 # 碎碎念
 
 现在这个 syscall 看起来比较像异步，但是我们这一版基本上不考虑异步，所以还是改回同步？
