@@ -244,7 +244,15 @@ Process 3 exited
 src/process/processor.rs:157: 'called `Option::unwrap()` on a `None` value'
 ```
 
+后来发现对于将当前线程重新放回调度队列的处理有点问题。于是分离出了一个新的 run_current_thread_later 函数，会在每次时钟中断的时候判断如果当前线程不是 idle ，就把当前线程放回调度队列里面。
 
+然后惊奇的发现，如果第一个用户程序是 fantastic_text 的话就能跑的很好，完全看不出有什么问题。第一个是 hello_world 的话就会在 hello_world 退出之后卡死。因为 hello_world 很短，应该是来不及跨越时钟中断的。研究了一下，问题出在 hello_world 退出之后，user_shell 才调用 wait，那自然是无法唤醒的了。
+
+于是暂时还是把两个 syscall 先合并了。
+
+看起来可以跑了，芜湖起飞！
+
+又发现了之前的一点小 bug，就是在堆分配器里面会做一些确保堆分配器工作的 assertion，然而当时我并没有意识到多核情况下很可能是不成立的。删掉之后就能跑了。
 
 ### 为每个线程保存它们曾跑在哪个 hart 上
 
@@ -270,6 +278,8 @@ src/process/processor.rs:157: 'called `Option::unwrap()` on a `None` value'
 目前，*Prologue* 和 *Epilogue* 不能跨越时钟中断。
 
 在 *Prologue* 和 *Epilogue* 中间，可能会出现若干次不会触发 prepare_next_thread 的 trap，导致用户态时间-内核态时间这种模式不断重复。啊这家伙好难实现。我们先把多核跑起来再说吧。
+
+最后也实现完了。还将所有的输出打包到一起，并加上了一点美化。	
 
 ### 实现 wait4 系统调用
 
@@ -299,9 +309,27 @@ src/process/processor.rs:157: 'called `Option::unwrap()` on a `None` value'
 
 目标：可以通过执行时间来比较性能
 
+### k210
+
+把 qemu 跑通之后，我将平台换成 k210 希望能直接跑通，但显然这是不可能的 QAQ
+
+很有可能是爆内存了。
+
+原先 Qemu 的情况是 4 核，内核栈的大小 16KiB，运行栈大小 32KiB，内核堆 32MiB，启动栈每个 1MiB。这个已经能正常把 master 上的代码在多核上跑了。
+
+然后 K210 的情况目前是双核，内核栈大小 32KiB，运行栈大小 32KiB，内核堆 3MiB，启动栈还是沿用 Qemu 的 1MiB，这个就太大了。暂时先改成 64KiB。这样总大小是 3MiB+(32+64KiB)*2=3.1875MiB。
+
+发现原来的 clear_bss 会占用更多的栈空间？这挺反直觉的。
+
+某个时候 k210 多核跑通了...但是之后就一直总跑到 unreachable 那里去???
+
+先回滚吧，太恐怖了。
+
 # 委曲求全的实现
 
 1. KERNEL_THREAD 和 PROCESSORS 都是手动展开成 4 个，目前非常不优雅。
+2. 尝试实现 sys_wait，但是由于没有子进程的设定，这无从展开
+3. 由于 pthread 的实现难度实在太大，同步互斥应该还是只能在内核线程里面自己玩了...但是有多核的话还是有点意思的，可以比较性能。
 
 # 碎碎念
 
