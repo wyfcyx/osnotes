@@ -323,7 +323,11 @@ src/process/processor.rs:157: 'called `Option::unwrap()` on a `None` value'
 
 某个时候 k210 多核跑通了...但是之后就一直总跑到 unreachable 那里去???
 
-先回滚吧，太恐怖了。
+回滚 RustSBI 即可。同时要注意 K210 和 qemu 的 target 要分别设置为 riscv64gc 和 riscv64imac。
+
+但是这样干了好像还是不行...发现原子变量那里卡不住。
+
+发现问题是在 hart0 初始化完 bss 之前，hart1 就直接去 load 了，然而 load 的那个 bool 是存在 bss 里面的，然后就炸了。这个问题很难优雅的解决。所以说，还是要沿用之前的设计，其他 hart 卡在 RustSBI 里面等待 ipi，然后 hart0 在内核态完成初始化之后通过 ipi 唤醒所有其他 hart。
 
 # 委曲求全的实现
 
