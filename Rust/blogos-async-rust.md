@@ -264,5 +264,483 @@
 
 ### 固定在堆上
 
+* 作者演示了如何在堆上分配一个自引用结构（保存一个指向自己位置的指针），并如何通过 `mem::replace` 或 `mem::swap` 来破坏其自引用性质。比如 `mem::replace(ref, value)` 是可以将引用的值取出并替换成给的值，然后将之前的值返回。
 
+* 一切的原因在于我们可以通过 `Box<T>` 拿到 `&mut T`，而 `mem::replace` 或 `mem::swap` 能够通过 `&mut T` 能将本来在堆上的自引用结构**移动**到栈上或是其他地方，这样的话自引用结构性质自然就被破坏。
+
+* ```rust
+  use core::marker::PhantomPinned;
+  
+  struct SelfReferential {
+      self_ptr: *const Self,
+      _pin: PhantomPinned,
+  }
+  ```
+
+  我们给结构体加上一个 `PhantomPinned` 字段，它是没有实现 `Unpin` trait 的，因此整个结构体也没有实现 `Unpin` trait。对于没有实现 `Unpin` 的类型，我们无法在 safe Rust 中从 `Pin<Box<T>>` 拿到 `&mut T`。创建 `Pin<Box<T>>` 需要从 `Box::new` 改成 `Box::pin`。
+
+  当我们想要这样做的时候：
+
+  ```rust
+  let stack_value = mem::replace(&mut *heap_value, SelfReferential {
+      self_ptr: 0 as *const _,
+  });
+  ```
+
+  就会提示 `Pin<Box<SelfReferential>` 未实现 `DerefMut` trait，于是自然不能拿到 `&mut SelfReferential`。
+
+  但是我们对于 `self_ptr` 的修改也一样会报出同样的错误。这个时候我们就需要通过 unsafe 的 `get_unchecked_mut` 来强行拿到引用。这个输入类型是 `Pin<&mut T>`，我们要先通过 `as_mut` 将 `Pin<Box<T>>` 转成 `Pin<&mut T>`。
+
+  我们可以修改 `self_ptr`，这是因为它是在初始化没有办法，但是 `mem::replace` 本身是不允许的。如果一定要这样做的话，我们需要在 unsafe 中自己确认它的安全。
+
+### 固定在栈上
+
+* 性能更高，但栈的生命周期不明，你要清楚你在干什么。虽然有一些工具，但还是很困难。
+
+### 固定与 Future
+
+* 编译器自动生成的状态机基本上都是自引用结构，需要用 `Pin` 保护它的性质。
+
+## Executor
+
+* 如何合理利用多核资源？也一样可以搞一个线程池，每个 Task 在一个核上跑。这样其实和线程调度是一样的。说起来我其实并不了解线程池是怎样一种设定。但确实将 CPU 计算任务打包成一个 Future 这种挺蠢的吧，要不就是涉及到 Copy，要不就线程不安全。
+
+  仔细想想，好像也可以做成抢下面一个共享的调度队列来着。（这几乎是万能的！）
+
+## Waker
+
+* 我们需要十分注意，调用 waker 接口唤醒的是 top-level Future 而不是叶子 Future。
+
+## 协作式多任务
+
+* 每个任务可以自己在适当的时侯保存状态，并且所有任务共用一个栈。
+* 协作式多任务的特征：适当放权给任务本身，所以任务自身需要保证不会做出过分的行为来维护整体环境
+* 每次要返回 Pending 之前，最小的状态会被保存在状态机内
+
+## Context 构造
+
+* 可以通过 `RawWaker` 构造一个类似 trait object 的家伙。因此 `RawWaker` 需要将两个指针拼在一起，一个是指向数据区域的指针，一个是指向虚表的指针。那么我们还需要先构造一个虚表，它可以用 `RawWakerVTable` 来构造。在构造虚表的时候我们需要提供这样几个方法的实现：
+
+  ```rust
+  pub const fn new(
+      clone: unsafe fn(_: *const ()) -> RawWaker,
+      wake: unsafe fn(_: *const ()),
+      wake_by_ref: unsafe fn(_: *const ()),
+      drop: unsafe fn(_: *const ())
+  ) -> Self
+  ```
+
+  官方文档中说：`RawWaker` 可以用来创建一个 `Waker`，而 `Executor` 可以通过 `Waker` 来定义唤醒行为。
+
+  我们要包装得到的 `RawWaker`，它可看成一个 trait Object，这是一个匿名 trait，只要支持 `clone, wake, wake_by_ref, drop` 几种方法即可。通常情况下我们已经有一个类，通过将它包装成 `RawWaker` 等价于为这个类实现了那个匿名 trait。要实现的四个方法的参数都是 `*const ()`，因为 `RawWaker` 并不知道我们要为什么类型 `T` 实现匿名 trait，所以在提供这些方法的时候，一种做法是将 `*const ()` 转成 `&mut T`，然后再调用类型 `T` 原生的函数来实现 `clone, wake, wake_by_ref, drop` 几种方法。
+
+  需要注意的是，它只是与 trait object 机制相似，但并不完全就是一个 trait object。
+
+  最简单情况下，`T` 这个类型甚至可以不存在。
+
+  ```rust
+  fn dummy_raw_waker() -> RawWaker {
+      todo!();
+  }
+  
+  fn dummy_raw_waker() -> RawWaker {
+      fn no_op(_: *const ()) {}
+      fn clone(_: *const ()) -> RawWaker {
+          dummy_raw_waker()
+      }
+  
+      let vtable = &RawWakerVTable::new(clone, no_op, no_op, no_op);
+      RawWaker::new(0 as *const (), vtable)
+  }
+  ```
+
+  进而，可以将 `RawWaker` 包装成一个 `Waker`，然后 `Context`。`Context` 就是我们在 `poll` 时所用到的参数。
+
+  之前我们已经创建过一个最简单的 Future：
+
+  ```rust
+  async fn async_number() -> u32 {
+      42
+  }
+  async fn example_task() {
+      let number = async_number().await;
+      println!("async number: {}", number);
+  }
+  ```
+
+  我们要将它包装成一个 `Task`：
+
+  ```rust
+  pub struct Task {
+      future: Pin<Box<dyn Future<Output = ()>>>,
+  }
+  impl Task {
+      pub fn new(future: impl Future<Output = ()> + 'static) -> Task {
+          Task {
+              future: Box::pin(future),
+          }
+      }
+      // 我们将 Task 放进 Executor 而不是 Future
+      fn poll(&mut self, context: &mut Context) -> Poll<()> {
+          self.future.as_mut().poll(context)
+      }
+  }
+  ```
+
+  这样我们就可以构造一个最简单的 `Executor`：
+
+  ```rust
+  // 只是一个 Task 队列而已
+  pub struct SimpleExecutor {
+      task_queue: VecDeque<Task>,
+  }
+  impl SimpleExecutor {
+      pub fn new() -> SimpleExecutor {
+          SimpleExecutor {
+              task_queue: VecDeque::new(),
+          }
+      }
+      pub fn spawn(&mut self, task: Task) {
+          self.task_queue.push_back(task)
+      }
+  }
+  ```
+
+  我们通过 `run` 将控制权交给 `Executor`：
+
+  ```rust
+  impl SimpleExecutor {
+      pub fn run(&mut self) {
+          // 取出一个任务
+          while let Some(mut task) = self.task_queue.pop_front() {
+              // 构造一个完全空的 Context
+              // 不过此时只有一个 Future 且直接返回 Poll::Ready
+              // 从而我们不用担心会从 Context 中取出 Waker 并 wake 的情况
+              let waker = dummy_waker();
+              let mut context = Context::from_waker(&waker);
+              match task.poll(&mut context) {
+                  Poll::Ready(()) => {} // task done
+                  // 这里的实现是，如果 Poll::Pending 的话放到队尾等待重新轮询
+                  Poll::Pending => self.task_queue.push_back(task),
+              }
+          }
+      }
+  }
+  ```
+
+  这样我们就能够看到我们的 `example_task()` 运行结束了！
+
+
+## 异步键盘输入
+
+* 键盘中断是一种很好的异步任务，因为它兼具**不可预测**和**延迟敏感** 的特性。
+
+* 中断处理只应该做**最少**的事情，比如只将键盘输入的字符读下来，剩下的数据结构操作则**不应该**放在中断处理中而是应该丢到某个后台任务里面去，不然可能错过重要的事情。
+
+* 某种做法是，维护一个全局的 scanqueue，中断处理的时候将字符 push 进去，某个后台任务（也就是键盘任务）则在后台 pop scanqueue 并进行处理。
+
+* **在中断里面尝试获取锁需要非常慎重**！若使用 Mutex 保护 scanqueue 并在中断处理的时候需要获取，极易导致**死锁**。比如当键盘任务持有锁的时候进入键盘中断。又或是在 scanqueue.push 的时候需要获取堆分配器的锁，而进入中断之前已经持有了该锁。
+
+  如何才能在不使用锁的情况下完成 scanqueue.push 呢？答案是使用无锁的原子指令（本质上是**在 CPU 支持下**将临界区**缩小到一条指令**，恰好缩小到 CPU 的执行单位）。为了避免隐式在堆上分配内存，我们只能给 scanqueue 一个固定的容量。
+
+### Rust 并发库 crossbeam
+
+* 给出了 `ArrayQueue`，且支持 `no_std` ，只要有 `alloc` 就能用。
+
+* 于是我们定义自己的 scanqueue:
+
+  ```rust
+  use conquer_once::spin::OnceCell;
+  use crossbeam_queue::ArrayQueue;
+  
+  static SCANCODE_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
+  ```
+
+  这里用到了一个叫做 `conquer_once` 的库，和 `lazy_static!` 在功能上一样，只是它确保初始化不会在中断处理里面进行（如何做到？），这样就可进一步确保中断处理里面没有堆内存分配（`ArrayQueue` 会用到）。不是很懂，目前我们应该还是选用 `lazy_static!`。
+
+### 队列入口
+
+* 在键盘中断中向 scanqueue push 字符：
+
+  ```rust
+/// Called by the keyboard interrupt handler
+  ///
+  /// Must not block or allocate.
+  pub(crate) fn add_scancode(scancode: u8) {
+      if let Ok(queue) = SCANCODE_QUEUE.try_get() {
+          if let Err(_) = queue.push(scancode) {
+              println!("WARNING: scancode queue full; dropping keyboard input");
+          }
+      } else {
+          println!("WARNING: scancode queue uninitialized");
+      }
+  }
+  ```
+  
+  我们通过 `try_get` 来确保不会在中断处理中 alloc。注意 `ArrayQueue` 自己完成了所有的同步，我们不必再通过 `Mutex` 等 wrapper 进行保护。
+
+### 队列出口
+
+* 在接收端，我们建立一个 `ScancodeStream` 类型来对应键盘任务：
+  
+  ```rust
+  pub struct ScancodeStream {
+      _private: (),
+  }
+  
+  impl ScancodeStream {
+      pub fn new() -> Self {
+          SCANCODE_QUEUE.try_init_once(|| ArrayQueue::new(100))
+              .expect("ScancodeStream::new should only be called once");
+          ScancodeStream { _private: () }
+      }
+  }
+  ```
+  
+  在 `ScancodeStream::new` 中我们进行 scanqueue 的初始化。这里的黑科技在于 `_private` 字段，它能够**禁止**在模块外构造该结构体。
+  
+* 我们不想为 `ScancodeStream` 实现 `Future` trait，因为它并不是那种一次性买卖，收到字符后直接返回 Ready；反之这个过程需要持续进行下去。所以我们从 futures 库中找到 `Stream` trait 如下：
+
+  ```rust
+  pub trait Stream {
+      type Item;
+  
+      fn poll_next(self: Pin<&mut Self>, cx: &mut Context)
+          -> Poll<Option<Self::Item>>;
+  }
+  ```
+
+  可以看到关联类型变成了一个 `Item`，状态机的推动手段从 `poll` 函数变成了 `poll_next` 函数，且返回值从 `Poll<Item>` 变成 `Poll<Option<Item>>`。直到它返回 `Ready(None)` 为止，`Exectuor` 都会不断尝试去 `poll_next` 它。大概是在 futures 库里面为它实现了 `Future` trait 来加入到 async 生态里面吧。
+
+  首先需要引入相应的依赖：
+
+  ```toml
+  # 之所以是 futures-util 而不是 futures 是为了减少编译时间
+  [dependencies.futures-util]
+  version = "0.3.4"
+  default-features = false
+  features = ["alloc"]
+  ```
+
+  于是我们为 `ScancodeStream` 实现 `Stream` trait 如下：
+
+  ```rust
+  impl Stream for ScancodeStream {
+      type Item = u8;
+  
+      fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<u8>> {
+          let queue = SCANCODE_QUEUE.try_get().expect("not initialized");
+          match queue.pop() {
+              Ok(scancode) => Poll::Ready(Some(scancode)),
+              Err(crossbeam_queue::PopError) => Poll::Pending,
+          }
+      }
+  }
+  ```
+
+  注意我们的 `try_get` 不会失败，因为在 `Self::new` 的时候已经初始化好了。实现也比较简单，看当前 scanqueue 里面有没有字符即可。
+
+### 唤醒
+
+* 就像 `Future::poll` 一样，在 `Stream::poll_next` 返回 `Poll::Pending` 的时候，我们需要注册一个回调函数，使得在新的字符到来的时候，`Executor` 能够重新关注 top-level Stream，并重新尝试 `poll_next` 它。
+
+  因此，每个任务必须能够从传进来的 `&mut Context` 中解压出 `Waker` 并将它存在某个地方。当任务准备好的时候，被保存下来的 `Waker` 会调用 `wake` 方法，...
+
+* 我们首先得找一个地方保存 `Waker`，但是又不能直接保存在 `ScancodeStream` 中，因为在中断处理的 `add_scancode` 阶段我们需要访问这个 `Waker` 来唤醒对应的 `Stream`。（既然如此为啥不能直接保存在 `ScancodeStream` 中？）答案同样是利用 futures 提供的工具类 `AtomicWaker`，它和 `ArrayQueue` 一样基于原子指令实现，自然支持同步互斥。
+
+  我们定义静态的 `AtomicWaker`：
+
+  ```rust
+  use futures_util::task::AtomicWaker;
+  
+  static WAKER: AtomicWaker = AtomicWaker::new();
+  ```
+
+  于是，在 `poll_next` 即将返回 `Poll::Pending` 的时候，我们将从 `Context` 中得到的 `Waker` 保存在 `WAKER` 里面；并在 `add_scancode` 的时候调用 `WAKER.wake` 唤醒该异步任务。
+
+### Waker 的保存
+
+* 修改 `poll_next` 的实现：
+
+  ```rust
+  impl Stream for ScancodeStream {
+      type Item = u8;
+  
+      fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<u8>> {
+          let queue = SCANCODE_QUEUE
+              .try_get()
+              .expect("scancode queue not initialized");
+  
+          // fast path
+          // 出于性能考虑，直接返回无需考虑 waker
+          if let Ok(scancode) = queue.pop() {
+              return Poll::Ready(Some(scancode));
+          }
+  
+          // 先把 Waker register 到 AtomicWaker 上
+          WAKER.register(&cx.waker());
+          // 再从 scanqueue 里面尝试一下
+          match queue.pop() {
+              Ok(scancode) => {
+                  // 如果这时就有字符了，把 register cancel 掉
+                  WAKER.take();
+                  // 还是返回 Ready
+                  Poll::Ready(Some(scancode))
+              }
+              Err(crossbeam_queue::PopError) => Poll::Pending,
+          }
+      }
+  }
+  ```
+
+  奇妙的同步互斥问题：假设第一次 check 队列里面没有字符，register 之后队列里面就有了该如何处理？`Executor` 需要注意一种特殊情况：即 WAKER.register 之后，重新尝试 pop 之前进入键盘中断，尝试调用 Waker.wakeup，但此时 `poll_next` 其实还在继续运行，该如何处理呢？（其实为啥要给自己找麻烦呢，只 pop 一次不香嘛？）
+
+### Waker 的唤醒
+
+* 我们需要在 `add_scancode` 内调用被保存起来的 `Waker` 的 `wake` 方法：
+
+  ```rust
+  pub(crate) fn add_scancode(scancode: u8) {
+      if let Ok(queue) = SCANCODE_QUEUE.try_get() {
+          if let Err(_) = queue.push(scancode) {
+              println!("WARNING: scancode queue full; dropping keyboard input");
+          } else {
+              WAKER.wake(); // new
+          }
+      } else {
+          println!("WARNING: scancode queue uninitialized");
+      }
+  }
+  ```
+
+  注意我们需要将字符 push 到 scanqueue 之后再 `Waker.wake`。（这个应该取决于 waker 里面是怎么实现的）哦，但多线程情况下倒的确如此。
+
+### 键盘任务
+
+* 我们可以用实现了 `Stream` trait 的 `ScancodeStream` 来创建一个 `Future`：
+
+  ```rust
+  pub async fn print_keypresses() {
+      let mut scancodes = ScancodeStream::new();
+      let mut keyboard = Keyboard::new(layouts::Us104Key, ScancodeSet1,
+          HandleControl::Ignore);
+  
+      while let Some(scancode) = scancodes.next().await {
+          if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
+              if let Some(key) = keyboard.process_keyevent(key_event) {
+                  match key {
+                      DecodedKey::Unicode(character) => print!("{}", character),
+                      DecodedKey::RawKey(key) => print!("{:?}", key),
+                  }
+              }
+          }
+      }
+  }
+  ```
+
+  `next` 方法来自于 futures 提供的另一个工具类 `StreamExt`。
+
+  这就是一个典型的一直卡在循环里面的 Future，大概可以类比异步服务器的主循环？按照 await 点进行划分，这个大 Future 应该有两个状态：肯定有一个是等在 await 上面，poll 的时候它会尝试 poll 一下它所等待 Future，如果是 Ready 的话它就会进到下一个初始状态，否则还是继续停在这个状态；初始状态就是准备往 await 状态进行转移。这两个状态（也可能有更多状态）形成了一个环，而没有所谓的终态。
+
+* 现在我们可以将 `print_keypresses` 加入我们的 `Executor` 并开始执行了。
+
+  注意，之前没有注意到的一点是，对于 `async fn` 的**调用**才是一个 `dyn Future`，否则可能只是一个 `Fn`？
+
+### 支持 Waker 的 Executor
+
+* 之前的 Executor 并不支持 wakeup，甚至传进去的 Waker 都是空的。之所以能正常跑是因为之前的 Executor 在不断轮询 poll 我们的 Future，而键盘中断的确能往 scanqueue 里面 push 字符，于是总有一次 poll 能从 scanqueue 里面读到字符并返回 Ready，大循环也能进入下一个 cycle。 但这并不符合异步的初衷。
+
+* 某个 `Waker.wake` 需要能够唤醒 `Executor` 内一个特定的 `Future`，就需要 `Executor` 能够区分不同的 `Future`，或者说 Task。
+
+* 我们给每个 `Task` 一个 TaskID：
+
+  ```rust
+  #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+  struct TaskId(u64);
+  
+  use core::sync::atomic::{AtomicU64, Ordering};
+  
+  impl TaskId {
+      fn new() -> Self {
+          // 突然觉得无锁天下第一！
+          static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+          TaskId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+      }
+  }
+  ```
+
+* 于是现在的 `Executor` 可以变得更为复杂：
+
+  ```rust
+  pub struct Executor {
+      // 根据 TaskID 查 Task
+      tasks: BTreeMap<TaskId, Task>,
+      // 维护一个无锁队列
+      task_queue: Arc<ArrayQueue<TaskId>>,
+      // 根据 TaskID 查 Waker
+      waker_cache: BTreeMap<TaskId, Waker>,
+  }
+  ```
+
+  这里 `TaskId` 的无锁队列需要多所有权是因为 `Executor` 和  `Waker` 都需要访问它。该队列其实就是一个**就绪队列**。交互流程是：`Waker` 将 要唤醒的 Task 的 TaskId push 到队列里面，然后 `Executor` 从队列中取出 TaskId，并根据它在 `tasks` 中查到对应的 Task，最后运行这个 Task。注意这个无锁队列也需要是固定大小的，不然在键盘中断中可能会触发 alloc。
+
+  我们还需要一个 waker_cache 将每个 Task 专属的 Waker 保存下来。这样做有两个原因：首先是同一个 Task 的多次 wakeup 可以复用该 Waker 而不用每次都新建一个；其次是保证引用计数分配的 Waker 不至于在中断处理中触发 dealloc。
+
+* 新建 Task
+
+  ```rust
+  impl Executor {
+      pub fn spawn(&mut self, task: Task) {
+          let task_id = task.id;
+          // 加入 Task Map 和就绪队列
+          if self.tasks.insert(task.id, task).is_some() {
+              panic!("task with same ID already in tasks");
+          }
+          self.task_queue.push(task_id).expect("queue full");
+      }
+  }
+  ```
+
+* 我们通过一个私有方法 `run_ready_tasks` 来执行任务：
+
+  ```rust
+  impl Executor {
+      fn run_ready_tasks(&mut self) {
+          // destructure `self` to avoid borrow checker errors
+          let Self {
+              tasks,
+              task_queue,
+              waker_cache,
+          } = self;
+  
+          while let Ok(task_id) = task_queue.pop() {
+              let task = match tasks.get_mut(&task_id) {
+                  Some(task) => task,
+                  None => continue, // task no longer exists
+              };
+              let waker = waker_cache
+                  .entry(task_id)
+              	// 每个 Task 只会新建一次 TaskWaker
+                  .or_insert_with(|| TaskWaker::new(task_id, task_queue.clone()));
+              let mut context = Context::from_waker(waker);
+              match task.poll(&mut context) {
+                  Poll::Ready(()) => {
+                      // task done -> remove it and its cached waker
+                      tasks.remove(&task_id);
+                      waker_cache.remove(&task_id);
+                  }
+                  // Pending 之后，由于已经从队列中移除，那么想要再次被 poll 
+                  // 就只能靠通过 Waker.wake 将 TaskId 加入 task_queue 了
+                  Poll::Pending => {}
+              }
+          }
+      }
+  }
+  ```
+
+  
+
+  
+
+  
 
