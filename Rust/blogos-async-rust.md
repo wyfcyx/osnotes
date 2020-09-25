@@ -738,9 +738,84 @@
   }
   ```
 
-  
+* 设计 Waker
 
+  ```rust
+struct TaskWaker {
+      task_id: TaskId,
+      task_queue: Arc<ArrayQueue<TaskId>>,
+  }
+  impl TaskWaker {
+      // 简单把 taskid push 在原子 TaskId 队列里面即可
+      fn wake_task(&self) {
+          self.task_queue.push(self.task_id).expect("task_queue full");
+      }
+  }
+  ```
   
-
+  构造 Context
+  
+  可以利用一个超级简单的 Wake trait
+  
+  ```rust
+  use alloc::task::Wake;
+  
+  impl Wake for TaskWaker {
+      // 只要实现如下两个函数即可，注意参数分别为 Arc<Self> 和 &Arc<Self>
+      fn wake(self: Arc<Self>) {
+          self.wake_task();
+      }
+  
+      fn wake_by_ref(self: &Arc<Self>) {
+          self.wake_task();
+      }
+  }
+  ```
+  
+  这样构造 Context 就非常简单了
+  
+  ```rust
+  impl TaskWaker {
+      fn new(task_id: TaskId, task_queue: Arc<ArrayQueue<TaskId>>) -> Waker {
+          Waker::from(Arc::new(TaskWaker {
+              task_id,
+              task_queue,
+          }))
+      }
+  }
+  ```
+  
+* 运行起来与主函数
+  
+  把 `run_ready_tasks` 包装一下：
+  
+  ```rust
+  impl Executor {
+      pub fn run(&mut self) -> ! {
+          // 为了鲁棒性如果队列里面没任务了，就重新进来一次
+          loop {
+              self.run_ready_tasks();
+          }
+      }
+  }
+  ```
+  
+  主函数：spawn 两个 task
+  
+  ```rust
+  fn kernel_main(boot_info: &'static BootInfo) -> ! {
+      // […] initialization routines, including init_heap, test_main
+  
+      let mut executor = Executor::new(); // new
+      executor.spawn(Task::new(example_task()));
+      executor.spawn(Task::new(keyboard::print_keypresses()));
+      executor.run();
+  }
+  ```
+  
+  
+  
+  
+  
   
 

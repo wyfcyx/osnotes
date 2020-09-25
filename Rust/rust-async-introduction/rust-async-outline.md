@@ -57,5 +57,17 @@ Context 又是怎么回事？trait Object
 
 ### Future 树
 
+## 画一些图
 
+divide a async function by await point
+
+async state machine tree
+
+layout of recursively nested async state machine
+
+Executor/Reactor/Waker:
+
+> Poll::Pending -> register a callback pair (I/O Trigger, wake closure of top-level Future)
+>
+> when I/O Trigger comes, wake closure will be called and the corresponding top-level Future will be able to poll in the executor again
 
