@@ -118,6 +118,23 @@ shinbokuow@163.com
       fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output>;
   }
   ```
+  
 * 编译器会为每个 async fn 转化成的状态机实现 `Future` trait。
+
 * 核心方法 `poll` 也就是我们所说的“调用”，它的实际作用是**试图把状态机从当前状态转移到另一个状态**。
+
 * 我们知道，要想能够转移的话，需要当前状态所 await 的子状态机达到终态。
+
+---
+
+## 异步并发的暂停
+* Executor 需要维护两个类似于就绪队列和休眠队列的 Root Future 队列
+* 当一个 Root Future 被加入 Executor 的时候，需要为它生成一个 `Waker`，内含 Executor 的部分逻辑，调用它可以在 Executor 中将位于休眠队列的 Root Future 放回就绪队列
+* 当 Executor `poll` Root Future 的时候会将内含 `Waker` 的 `Context` 作为参数传进去，而每个非叶 Future `poll` 子 Future 的时候也会将 `Context` **原封不动**传下去，最终到某个叶子 Future 发现 I/O 未准备好的时候，会在 Reactor 中注册一个(当前 I/O 类型，`Context`)的回调函数。注意这个 `Context` 是用来在 Executor 中**唤醒 Root Future** 而不是叶子 Future 的。事实上，叶子 Future 只是 Root Future 状态机中的一部分，并不为 Executor 所知。
+* 对于这个叶子 Future 的 `poll` 会返回 `Pending`，因而 Root Future 的 `poll` 也最终会返回 `Pending`。Executor 会将这个 Root Future 放进休眠队列。
+
+---
+
+## 异步并发的唤醒
+* 当某个 I/O 准备好后，在 Reactor 中根据 I/O 类型查到了对应 `Context`，调用其中 Executor 提供的 `Waker` 即可将对应的 Root Future 从休眠队列放回就绪队列，从而可以继续被 `poll`。
+* 某一时刻 Executor 重新 `poll` 那个 Root Future，还是会 `poll` 那个导致阻塞的叶子 Future，这次它会返回 `Ready`，从而其父 Future 可以进入下一个状态...任务的进度开始增加。

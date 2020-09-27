@@ -254,20 +254,47 @@ shinbokuow@163.com
 * Executor 管理一系列 Root Future（也就是异步任务），类似一个调度器，每次选出一个 Root Future 来 `poll`，推进任务的进度
 * Reactor 收集 I/O 准备好的信息，并通知 Executor 相应的 Root Future 可以继续被 `poll` 了
 * 双方通过 Rust 提供的 `Waker` 接口实现唤醒机制， Executor 负责实现该接口，Reactor 负责调用该接口
+![](future-runtime.png)
 
 ---
 
-## 异步并发的暂停
-* Executor 需要维护两个类似于就绪队列和休眠队列的 Root Future 队列
-* 当一个 Root Future 被加入 Executor 的时候，需要为它生成一个 `Waker`，内含 Executor 的部分逻辑，调用它可以在 Executor 中将位于休眠队列的 Root Future 放回就绪队列
-* 当 Executor `poll` Root Future 的时候会将内含 `Waker` 的 `Context` 作为参数传进去，而每个非叶 Future `poll` 子 Future 的时候也会将 `Context` **原封不动**传下去，最终到某个叶子 Future 发现 I/O 未准备好的时候，会在 Reactor 中注册一个(当前 I/O 类型，`Context`)的回调函数。注意这个 `Context` 是用来在 Executor 中**唤醒 Root Future** 而不是叶子 Future 的。事实上，叶子 Future 只是 Root Future 状态机中的一部分，并不为 Executor 所知。
-* 对于这个叶子 Future 的 `poll` 会返回 `Pending`，因而 Root Future 的 `poll` 也最终会返回 `Pending`。Executor 会将这个 Root Future 放进休眠队列。
+## Executor
+* Executor 通常包含就绪和阻塞队列
+* 队列中的元素是一颗 Future 树，也就是 Root Future
+![](executor.png)
 
 ---
 
-## 异步并发的唤醒
-* 当某个 I/O 准备好后，在 Reactor 中根据 I/O 类型查到了对应 `Context`，调用其中 Executor 提供的 `Waker` 即可将对应的 Root Future 从休眠队列放回就绪队列，从而可以继续被 `poll`。
-* 某一时刻 Executor 重新 `poll` 那个 Root Future，还是会 `poll` 那个导致阻塞的叶子 Future，这次它会返回 `Ready`，从而其父 Future 可以进入下一个状态...任务的进度开始增加。
+## Reactor
+* Reactor 中包含一个表，根据 I/O 类型保存 Context
+![](reactor.png)
+* 每个 Context 和一个 Root Future 相对应，并用来在 Executor 中唤醒它
+
+
+---
+
+## Block
+![](cycle-part1.png)
+
+---
+
+![](cycle-part2.png)
+
+---
+
+![](cycle-part3.png)
+
+---
+
+## Wakeup
+![](wakeup.png)
+
+---
+
+## 一些想法
+* 多核：每个核跑一个 Executor::run，共享下面的调度队列
+* 加强实时性：将所有优先级较低的任务以异步方式执行，打包到一起，开一个专门的内核线程处理它；优先级较高的任务仍是以同步的方式，每个占用一个线程。
+  这样主框架还是同步调度，其中一个线程完成异步任务。
 
 ---
 
