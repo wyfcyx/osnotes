@@ -54,6 +54,26 @@
 
 ## 素材-可用的工具
 
+## 素材-陈老师华为 PPT
+
+C 语言的局限性：指针灵活但是非常不安全、缺乏有效的并发支持
+
+当前 OS 的困难 1：内核膨胀，bug 增加，难以发现
+
+比如：内存安全 bg（如使用空指针、use-after-free）、并发相关 bug（如死锁、数据竞争）
+
+当前 OS 的困难 2：不能像开发应用一样开发内核（调试工具缺乏、移到用户态会降低性能）
+
+用高级语言写 OS：Biscuit OS in Golang(2018)，Tock OS in Rust(2017)
+
+[ixy](https://github.com/ixy-languages/ixy-languages) 是一个用多种不同语言开发的网卡的用户态驱动，并进行了性能的比较，这是相关的[论文](https://www.net.in.tum.de/fileadmin/bibtex/publications/papers/the-case-for-writing-network-drivers-in-high-level-languages.pdf)。从中可以看出 Rust 和 C 几乎相同（特别是并发程度提高之后）并领先于其他编程语言。
+
+Tsinghua 的尝试：rCore/zCore
+
+## 素材-张汉东老师讲座@上海科技大学
+
+## 素材-张汉东老师知乎 Live
+
 ## 提纲（暂定）
 
 ### Rust 的安全性
@@ -69,3 +89,4 @@
 ### Rust 的嵌入式生态
 
 ### Rust IDE/相关工具简介
+
