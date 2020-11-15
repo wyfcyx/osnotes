@@ -16,11 +16,21 @@
 
 好。下面开始疯狂收集素材。
 
+### 2020-11-15
+
+陈老师知道了情况之后，和杨沙洲老师讨论了一下，最后决定下周二下午五点给一个 20 分钟的简单宣讲即可。
+
+素材就是陈老师在华为做的长达两个小时报告的 PPT，还有张汉东老师做的《关于 Rust 你需要了解的》讲座，这个我之前看过并留下了详细笔记。
+
+尽管如此，我觉得 cs110L 和 Rust Embedded Book 作为我自身的学习材料仍然是不可错过的，所以今天还是看这些材料，能看多少就看多少。
+
 ## 素材-性能比较
 
 [一篇比较 Rust 和 C 性能的 Blog](https://kornel.ski/rust-c-speed)
 
 [另一篇支持 Rust 某种程度上没有那么好的 Blog](https://www.viva64.com/en/b/0733/)
+
+[C++ 和 Rust 的运行性能比较](https://benchmarksgame-team.pages.debian.net/benchmarksgame/fastest/gpp-rust.html)
 
 ## 素材-嵌入式 Rust 生态
 
@@ -35,6 +45,8 @@
 ## 素材-不局限于 no_std 的生态
 
 ## 素材-Rust 和 C 进行比较
+
+[一篇比较详细的比较 C/Rust 的 Blog](https://medium.com/better-programming/in-depth-comparison-of-rust-and-cpp-579b1f93a5e9)
 
 ## 素材-rCore
 

@@ -42,3 +42,8 @@ runner = "qemu-system-arm -cpu cortex-m3 -machine lm3s6965evb -nographic -semiho
 
 * `-gdb tcp::3333` 告诉 Qemu 作为服务器监听本地的 3333 端口等待 gdb 连接；
 * `-S` 告诉 Qemu 先停下来。
+
+## 2.2 Hardware
+
+这里讲的是如何在真机上运行和调试，和上一小节差不多。
+
