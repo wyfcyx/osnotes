@@ -76,69 +76,17 @@ Tsinghua 的尝试：rCore/zCore
 
 ## 提纲（暂定）
 
-### Rust 的诞生背景和设计理念
+### Rust 的安全性
 
-即可靠性、高性能还有易用性。接下来会分别从这三个方面展开。
-
-Rust 的诞生背景可以参考张汉东老师的讲座或者是《Rust 编程之道》。
-
-顺带可以科普一下 Rust 命名的含义？
-
-老缝合怪 Rust 各向其他语言借鉴了哪些特性？
-
-* 底层内存管理，RAII 从 C/C++ 借鉴
-* 类型系统、函数式编程从一些函数式编程语言借鉴
-
-### Rust 的可靠性
-
-内存安全：列举一些经典的 bug，引入所有权模型和借用检查，从裸指针到智能指针（fat pointer），[cs242: Memory Safety](https://cs242.stanford.edu/f19/lectures/06-2-memory-safety)
-
-类型安全：可以说自动隐式转换只有 Deref 一种东西吗？默认情况下检查数组溢出、甚至运算溢出。所以到底什么是类型安全呢？
-
-并发安全：若是要举例的话，Rc 可能是一个不错的例子
-
-错误处理：解决空指针问题：Option；错误处理：Result
-
-安全边界：safe/unsafe，程序员自己承担责任！
-
-### Rust 的高生产力
-
-面向对象：Trait 和泛型，[cs242: Rust Trait](https://cs242.stanford.edu/f19/lectures/07-1-traits)
-
-模块可见性管理
-
-函数式编程：迭代器和闭包
+比如：内存安全、并发安全、类型安全。
 
 ### Rust 的高性能
 
-理论上可能来源于：没有 GC；零成本抽象，运行时比较小。
+可能来源于：没有 GC；零成本抽象，运行时比较小。
 
-实战：ixy 和另一个 C/Rust 的 [benchmark](https://benchmarksgame-team.pages.debian.net/benchmarksgame/fastest/rust.html)。至少 C 和 Rust 有着接近且明显超出其他语言的性能，内存占用方面看起来似乎比较大，但是在嵌入式场景下就不一定如此了。Rust 的运行时可以灵活配置。
+### Rust 的易用性
 
-### Rust 工具集和库生态
+### Rust 的嵌入式生态
 
-（特别是，对于嵌入式开发/系统级编程有哪些好处？）
+### Rust IDE/相关工具简介
 
-基于 rustup ，工具链版本集中管理
-
-基于 cargo，语义化版本的包管理器
-
-说到包，那也可以提到目前还算完善的 Rust 生态，包括 Rust 嵌入式生态、rcore-os 系列生态，还有一些其他比较有名的包
-
-嵌入式要提到对于 no_std 的支持，以及 libcore 和 libstd 之间的区别，当然了，还有 alloc 的作用，这个都是应该在上面提到的
-
-很多其他的系列工具：如 clippy，format，rust-doc，自动测试等等功能
-
-写代码的时候有不错的自动补全和类型显示功能，目前常用的是 CLion+内置 Rust 插件或者是 VSCode+rust-analyzer
-
-### C and Rust
-
-Learn Rust based on C
-
-C to Rust/Rust to C
-
-`#[repr(C)]` or `extern "C"` FFI...
-
-### Rust 的不足？
-
-### Thank you!
