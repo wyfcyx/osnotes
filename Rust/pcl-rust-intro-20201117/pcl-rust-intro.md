@@ -444,6 +444,21 @@ fn main() {
 
 ---
 
+### 可恢复错误
+在一个函数可能在多个地方遇到错误的时候，可以通过 `try!` 宏在遇到错误的时候直接返回，而不必每次都判断是否发生错误。它可以简写为 `?` 。
+```rust
+use std::num::ParseIntError;
+
+fn multiply(first_number_str: &str, second_number_str: &str) -> Result<i32, ParseIntError> {
+    let first_number = first_number_str.parse::<i32>()?;
+    let second_number = second_number_str.parse::<i32>()?;
+
+    Ok(first_number * second_number)
+}
+```
+
+---
+
 ## Unsafe
 有些操作即使程序员明确的知道没有问题，但是 Rust 没有判定其是否有安全隐患的能力。比如：
 * 直接通过地址访问设备寄存器（即：解引用裸指针）；
@@ -652,6 +667,7 @@ Rust 官方提供的各种有用的小工具：
 # Thank you!
 ## Ref
 Some contents come from:
+* [Rust 内存模型分析](https://zhuanlan.zhihu.com/p/201220495)
 * [cs110L](https://reberhardt.com/cs110l/spring-2020/)
 * [cs242](https://cs242.stanford.edu/f19/)
 * [Rust official Blog](https://blog.rust-lang.org/)
