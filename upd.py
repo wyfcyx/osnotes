@@ -10,4 +10,4 @@ if len(sys.argv) == 1:
 else:
     message = sys.argv[1]
 pattern = "git add -A && git commit -m \"Update %s %s\" && git push"
-os.system(pattern % (message, time.localtime(time.time())))
+os.system(pattern % (message, time.asctime(time.localtime(time.time()))))
