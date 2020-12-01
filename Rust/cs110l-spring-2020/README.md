@@ -478,3 +478,96 @@ fn print_min<T: fmt::Display + PartialOrd>(x: T, y: T) {
 
 （停在数据竞争之前，有空回来再看）
 
+# Lab
+
+## week3
+
+需要给 `LinkedList<T>` 实现 `IntoIterator` 和 `Iterator` 两个 Trait，触及知识盲区了，因此上来记录一下。
+
+[这里](http://xion.io/post/code/rust-for-loop.html)给出了 Rust for-loop 的说明。
+
+比如这段代码：
+
+```rust
+let v = vec!["1", "2", "3"];
+for x in v {
+    println!("{}", x);
+}
+```
+
+这里的 for-loop 会把 v move 到循环里面。因此之后 v 就会被标记为 moved 状态了。
+
+这是因为，for-loop 和赋值、传参的值语义一样，有可能发生 move 语义。同理，基于闭包的两种分别会/不会 move 的写法如下：
+
+```rust
+for_each(v, |x| println!("{}", x));
+for_each_ref(&v, |x| println!("{}", x));
+```
+
+因此我们使用 ``for x in &v`` 就不会发生 move。
+
+重要的是，``&`` 并不是 for-loop 的一部分，它只是让被迭代的类型从 ``Vec<T>`` 变成了 ``&Vec<T>``。这会导致迭代元素 `x` 的类型也从 `T` 变成了 `&T`。事实上在 Rust 中 `Vec<T>` 和 `&Vec<T>` 都是可迭代类型，通常被叫做迭代器。迭代器需要维护当前迭代到的元素并支持以下操作：
+
+* 获取当前元素
+* 迭代到下一个元素
+* 当没有可用元素的时候告诉调用者
+
+在 Rust 中 `Iterator` Trait 的 `next` 方法同时具有这些功能。
+
+Rust 中使用 `IntoIterator::into_iter(self) -> Iterator` 来从一个类型创建 `Iterator`，注意它会将自身变成 moved 状态，之后只能使用生成的 Iterator 来访问。事实上 Rust 里面这种默认 move 的做法避免了 C++ 里面常见的 iterator invalidation 的隐患。重点就是：编译器不允许两个类 Iterator 同时存在。
+
+事实上在 for-loop 里面调用了 `into_iter`，如 `for x in v` 可以改写成：
+
+```rust
+let mut iter = IntoIterator::into_iter(v);
+loop {
+    if let Some(x) = iter.next() {
+        // body
+    } else {
+        break;
+    }
+}
+```
+
+因此 for-loop 只是这样一个语法糖而已。
+
+如果我们将 `v` 换成 `&v`，相当于对 `&Vec<T>` 调用 `into_iter`，它的返回类型为 `Iterator<&T>`。同理，`&mut v` 返回类型为 `Iterator<&mut T>`。
+
+当我们以如下方式使用迭代器和各种适配器的时候：
+
+```rust
+let doubled_odds: Vec<_> = numbers.iter()
+    .filter(|&x| x % 2 != 0).map(|&x| x * 2).collect();
+```
+
+第一步首先是要获取迭代器。事实上 `iter()` 就是 `IntoIterator::into_iter(&numbers)` 的语法糖。他会生成一个 `Iterator<&T>` 的迭代器，因此适配器闭包里面的参数可以使用引用捕获。
+
+也因此，我们实际上是要：
+
+```rust
+impl<T> IntoIterator for &LinkedList<T>;
+```
+
+这个会生成一个 `Iterator<&T>`。剩下的应该不用动了。
+
+生成迭代器的常见方法：`iter()` 可以对 `&T` 进行迭代；`iter_mut()` 可以对 `&mut T` 进行迭代，`into_iter` 可以对 `T` 进行迭代。 
+
+用全新的视角来阅读指导中给出的另一份[生命周期的文档](https://doc.rust-lang.org/1.9.0/book/lifetimes.html)。
+
+Rust 的所有权模型是它零成本抽象的一个重要范例。生命周期的存在某种程度上解决悬垂指针或者 use-after-free 的隐患。
+
+当我们在函数的参数/返回值中含有引用的时候需要显式或隐式（编译器帮助我们补全）带有生命周期泛型。比如：
+
+```rust
+fn bar<'a>(x: &'a i32);
+```
+
+在结构体中出现的生命周期泛型主要是保证作为字段的引用的生命周期比结构体自身要长（outlive），比如：
+
+```rust
+struct Foo<'a> {
+    x: &'a i32,
+}
+```
+
+生命周期自动补全的三条规则。
