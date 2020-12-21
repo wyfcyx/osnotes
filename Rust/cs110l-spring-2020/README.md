@@ -478,6 +478,33 @@ fn print_min<T: fmt::Display + PartialOrd>(x: T, y: T) {
 
 数据竞争则是指多个线程同时访问一个值，其中某个线程是写入操作。
 
+这里面给出了两个例子来说明 Rust 相比 C 如何解决一些并发安全问题。
+
+Rust 多线程的常用范式是 `std::thread::spawn` 用一个闭包作为参数（闭包捕获参数需要受到 Send 和 Sync 的限制，注意我们仍然主要思考最终的共存状态而不仅仅是 move 过程）。它会返回一个 `JoinHandle`。`JoinHandle::join` 会阻塞主线程直到对应的子线程结束，子线程 panic 不会影响到程序主体。
+
+一段错误的 C 代码：
+
+```c
+for (size_t i = 0; i < kNumExtroverts; i++)
+    pthread_create(&extroverts[i], NULL, recharge, &i);
+```
+
+这里是传了一个在主线程中会改变甚至被回收的临时变量的地址，明显是线程不安全的。
+
+当我们尝试在 Rust 中这样做：
+
+```rust
+for i in 0..6 {
+    threads.push(thread::spawn(|| {
+        println!("Hello from printer {}!", NAMES[i]);
+    }));
+}
+```
+
+闭包会默认用不可变引用方式捕获变量 `i`。但是即使如此仍然有问题，Rust 会报错，原因是有可能主线程 `i` 已经离开作用域，子线程还在使用 `i` 的引用，造成悬垂指针。解决方法是强行在闭包前面加入 move 关键字让闭包使用移动语义进行捕获，由于 `i` 是一个 Copy 的类型，实际上它会被按位复制一份放到闭包里面。
+
+另一段错误的 C 代码中，主线程将同一个变量的可变引用传给多个子线程作为参数。
+
 # Lab
 
 ## week3
