@@ -122,5 +122,11 @@ import chisel3.iotesters.{ChiselFlatSpec, Driver, PeekPokeTester}
 
 ## Scala is Object Oriented 
 
+Variables, constants, literals, even functions are all objects.
+Objects are instances of classes.
+Programmers specify immutable(`val`) and mutable(`var`) fields and methods when defining a class.
+Subclasses can be extended from their superclasses and inherit their fields and methods.
+Subclasses can also inherit from traits. They are a kind of lightweighted class, and a class can inherit from multiple of them.
+
 
 
