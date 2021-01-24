@@ -1,5 +1,7 @@
 # [18error-handling](https://doc.rust-lang.org/rust-by-example/error.html)
 
+[Recommended! Another Rust error handling pattern](http://www.sheshbabu.com/posts/rust-error-handling/)
+
 ## 18.3 Result
 
 `Result<T, E>` 是一个枚举类型，有 `Ok<T>` 和 `Err<E>` 两种可能。
