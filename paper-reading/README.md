@@ -14,6 +14,8 @@
 
 [SOSP'17 Multiprogramming a 64kB Computer Safely and Efficiently](https://dl.acm.org/doi/pdf/10.1145/3132747.3132786)
 
+最近的 Rust IoT 实现 [Drogue.io](https://blog.drogue.io/)
+
 # LOG
 
 ## Week1(2020-11-23)

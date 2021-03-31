@@ -1,0 +1,1 @@
+丢[链接](https://gil0mendes.io/blog/an-efi-app-a-bit-rusty/)跑。
