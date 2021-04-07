@@ -88,3 +88,30 @@ EFLAGS中的某些位可以通过特定用途指令直接修改。但是没有�
 当通过调用处理中断/异常的时候，处理器自动将EFLAGS的状态保存在调用栈上；当通过任务切换处理中断/异常的时候，EFLAGS则会被保存在被暂停任务的TSS中。
 
 EFLAGS是后向兼容的。
+
+状态位（0/2/4/6/7/11）表明了算术指令（ADD/SUB/MUL/DIV）的结果。具体来说，有Carry Flag(0)/Parity Flag(2)/Auxiliary Carry Flag(4)/Zero Flag(6)/Sign Flag(7)/Overflow Flag(11)。暂时不考虑它们的含义。只有CF可以通过STC/CLC/CMC等指令直接修改。通过BT/BTS/BTR/BTC等位操作指令也可以将一个位拷贝到CF中。
+
+随着运算结果被视为有符号/无符号整数/BCD整数的不同，对于状态位的设置也是不同的。
+
+条件指令Jcc/SETcc/LOOPcc/CMOVcc会基于一个或多个状态位的结果产生不同效果。
+
+只有一个控制位Direction Flag(10)控制字符串指令MOVS/CMPS/SCAS/LODS/STOS，会影响字符串操作从低地址到高地址还是反过来。通过STD/CLD指令分别可以设置和清空DF。
+
+EFLAGS中剩下的系统位和IOPL字段不应被应用程序修改。
+
+* Trap Flag,TF(8)控制单步调试；
+* Interrupt enable flag,IF(9)控制处理器对于可屏蔽中断的响应方式。置位则会响应，清空则会屏蔽它们。
+* I/O privilege level field,IOPL(12/13)表示当前正在执行的程序或任务的I/O特权级。为了访问I/O地址空间，处理器的当前特权级CPL需要<=IOPL。仅当CPL=0的时候，POPF和IRET指令可以修改IOPL。
+* Nested Task Flag,NT(14)控制被中断/被调用的任务链。NT=1则表示当前任务被链接到上一个任务。
+* Resume Flag,RF(16)控制处理器是否响应调试异常
+* Virtual-8086 mode Flag,VM(17)，VM=1使能virtual-8086模式，否则返回保护模式
+* Alignment check(or access control) flag,AC(18)控制对齐检查和访问控制，与CR0/CR4有关。
+* Virtual Interrupt Flag,VIF(19)这个是IF系统位的虚拟镜像，通常和VIP联合使用。为了使用VIF/VIP需要设置CR4的VME位来打开虚拟机模式。
+* Virtual Interrupt Pending Flag,VIP(20)
+* Identification Flag,ID(21)和CPUID指令有关？
+
+在64位模式下，EFLAGS被拓展至64位的RFLAGS，它的高32位被保留，低32位与EFLAGS相同。
+
+***
+
+指令指针EIP保存着当前代码段中下一条将被执行的指令的段内偏移。

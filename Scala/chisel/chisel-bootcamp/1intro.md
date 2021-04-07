@@ -128,5 +128,78 @@ Programmers specify immutable(`val`) and mutable(`var`) fields and methods when 
 Subclasses can be extended from their superclasses and inherit their fields and methods.
 Subclasses can also inherit from traits. They are a kind of lightweighted class, and a class can inherit from multiple of them.
 
+## Class Example
 
+```scala
+// WrapCounter counts up to a max value based on a bit size
+class WrapCounter(counterBits: Int) {
+
+  val max: Long = (1 << counterBits) - 1
+  var counter = 0L
+    
+  def inc(): Long = {
+    counter = counter + 1
+    if (counter > max) {
+        counter = 0
+    }
+    counter
+  }
+  println(s"counter created with max value $max")
+}
+```
+
+defining code block: run when an instance is initialized(or constructed)
+
+class methods are wrapped in the defining code block
+
+s before `""` means interpolated string, and by using `$` you can print the value(formatting-like)
+
+## Instantiation
+
+```scala
+val x = new WrapCounter(2)
+
+x.inc()
+// or x inc()
+
+// member variables/values are public by default
+if (x.counter == x.max) {
+    println("counter is about to wrap")
+}
+```
+
+## Code Blocks
+
+code blocks are also expressions(like rust)
+
+type of an empty code block `{}` is `Unit`
+
+code blocks with parameters:
+
+```scala
+// style 1
+def add1(c: Int): Int = c + 1
+class RepeatString(s: String): String {
+    val repeatedString = s + s
+}
+
+// style 2
+val intList = List(1, 2, 3)
+// closure(anonymous function)
+val stringList = intList.map { i => 
+    i.toString
+}
+```
+
+## Passing parameters
+
+```scala
+// prototype
+def myMethod(count: Int, wrap: Boolean, wrapValue: Int = 24): Unit = { ... }
+// normal order
+myMethod(count = 10, wrap = false, wrapValue = 23)
+// different order
+myMethod(wrapValue = 23, wrap = false, count = 10)
+// we have to provide value for the arguments which does not have default value
+```
 
