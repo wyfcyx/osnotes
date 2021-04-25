@@ -34,6 +34,17 @@ shinbokuow@163.com
 
 # Outline
 
+## OS 实验相关
+## K210 实例演示
+## RV 特权级架构回顾
+## RustSBI 兼容性设计与实现
+## Qemu vs K210 其他差异分析
+## 项目展望与赛题分析
+
+---
+
+# Outline
+
 ## **OS 实验相关**
 ## K210 实例演示
 ## RV 特权级架构回顾
@@ -330,7 +341,7 @@ rCore-Tutorial-v3:
 ## Trap 的产生
 ![bg right:45% width:600px](riscv-interrupt.png)
 * 时钟/软件中断由 CLINT 生成/转发
-* 外部中断由 PLIC 生成/转发
+* 外部中断由 PLIC 转发
 * 转发结果会连接到每个 hart 的 `<p>ip` CSR 的字段上（`<p>` 指某特权级）
 * 比如 CLINT 要转发到 hart0 的 M 时钟中断，就会有一根线连接到 hart0 上的 `mip.mtip`
 * CPU 会根据这些字段来判断中断是否产生
@@ -367,7 +378,8 @@ rCore-Tutorial-v3:
 
 # Outline
 
-## OS 实验相关
+## OS 实验概况
+## K210 实例演示
 ## RV 特权级架构回顾
 ## **RustSBI 兼容性设计与实现**
 ## Qemu vs K210 其他差异分析
