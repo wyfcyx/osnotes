@@ -161,3 +161,55 @@ test(new Arbiter) { c =>
 println("SUCCESS!!")
 ```
 
+## exercise: parameterizedAdder
+
+```scala
+class ParameterizedAdder(saturate: Boolean) extends Module {
+  val io = IO(new Bundle {
+    val in_a = Input(UInt(4.W))
+    val in_b = Input(UInt(4.W))
+    val out  = Output(UInt(4.W))
+  })
+
+  val sum = io.in_a +& io.in_b
+
+  if (saturate) {
+      io.out := Mux(sum > 15.U, 15.U, sum)
+  } else {
+      io.out := sum
+  }
+}
+
+for (saturate <- Seq(true, false)) {
+  test(new ParameterizedAdder(saturate)) { c =>
+    // 100 random tests
+    val cycles = 100
+    import scala.util.Random
+    import scala.math.min
+    for (i <- 0 until cycles) {
+      val in_a = Random.nextInt(16)
+      val in_b = Random.nextInt(16)
+      c.io.in_a.poke(in_a.U)
+      c.io.in_b.poke(in_b.U)
+      if (saturate) {
+        c.io.out.expect(min(in_a + in_b, 15).U)
+      } else {
+        c.io.out.expect(((in_a + in_b) % 16).U)
+      }
+    }
+    
+    // ensure we test saturation vs. truncation
+    c.io.in_a.poke(15.U)
+    c.io.in_b.poke(15.U)
+    if (saturate) {
+      c.io.out.expect(15.U)
+    } else {
+      c.io.out.expect(14.U)
+    }
+  }
+}
+println("SUCCESS!!")
+```
+
+
+
