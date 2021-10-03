@@ -68,5 +68,36 @@ We'll add some new syscalls:
 
   return tid of current thread.
 
+## stage3
 
+provide sync&mutex primitive
 
+### mutex
+
+exclusion and also the primitive itself provided by the kernel(kernel itself can provide mutual exclusion cuz we don't enable intr in kernel and we're on an uniprocessor)
+
+* `uint64 mutex_create()`
+* `uint64 mutex_acquire()`
+* `uint64 mutex_release()`
+
+user wrong case: just loop to wait the lock to be released(analyze why it doesn't make sense)
+
+user right case: based on atomic variable(it doesn't involve memory consistency model since we're on the uniprocessor), however we have to add a loop at the beginning of the critical section
+
+> spin lock(hard and maybe unnecessary to be implemented by blocking)
+>
+> sleep lock
+
+### barrier(optional)
+
+### condition variable
+
+reimplement `sleep` syscall which will be used in philosopher dining problem(must supervised by the kernel)
+
+this can be easily implemented through blocking
+
+### semaphores
+
+philosopher dining problems
+
+not sure whether blocking is needed
