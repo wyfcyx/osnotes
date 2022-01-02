@@ -124,3 +124,23 @@ z = y;
 
 ```
 
+例子：引用outlive值
+
+```rust
+fn as_str(data: &u32) -> &str {
+    let s = format!("{}", data);
+    &s
+}
+```
+
+编译器进行生命周期自动标注：
+
+```rust
+fn as_str<'a>(data: &'a u32) -> &'a str {
+    'b: {
+        let s = format!("{}", data);
+        return &'a s;
+    }
+}
+```
+
