@@ -76,9 +76,55 @@ now, stage1 translation: secure EL1 VA->{TTBR_EL0, TTBR_EL1(with NS bit)}->{Secu
 
 stage2 translation: Secure IPA->VSTTBR_EL2->Secure PA; Non-secure IPA->VTTBR_EL2->Non-secure PA
 
+## System architecture
 
+execution starting point: trusted ROM, on-chip; trusted RAM, a couple of hundreds of kilobytes, also on-chip
 
+## Software architecture
 
+### top-level
 
+<img src="trustzone-sw-arch.png" style="zoom:56%;" />
 
+common trusted services: key management, DRM(Digital Rights Management)
+
+scheduling: TEE as a task in Rich OS, when it is scheduler, using `SMC` to switch to TEE, this design provide only confidentiality but not availability, 
+
+trusted kernels: [OP-TEE](https://optee.readthedocs.io/en/latest/)(based on trusted firmware [provided by ARM officially](https://github.com/ARM-software/arm-trusted-firmware) and [another website](https://www.trustedfirmware.org/)), fully featured, open-source, 
+
+<img src="op-tee-arch.png" style="zoom:67%;" />
+
+OP-TEE kernel runs on S.EL1, trusted applications run on S.EL0, TEE Internal APIs are maintained by GP(Global Platform), OP-TEE driver in Rich OS space(NS.EL1), TEE Client API is between libraries and Rich OS, also maintained by GP, tee-supplicant(handle TEE-related services such as secure storage)
+
+### interact with non-secure virtualization
+
+EL0/1->SMC instruction->trap into EL2(how can we do that?)->SMC trap handler of hypervisor->{firmware emulator of hypervisor at EL2|SMC dispatcher at EL3}
+
+### boot and the chain of trust
+
+chain of trust: every stage verifies the code of the next stage it is going to load, if fails:
+
+* the first stage code in the ROM maybe on-chip: cannot fail
+
+* second-stage boot image: cannot boot
+* TEE: can boot, but only the normal world is active
+* Non-secure state firmware or Rich OS image: can boot, but limited
+
+### trusted firmware
+
+<img src="trusted-firmware.png" style="zoom:60%;" />
+
+## Example use cases
+
+### Encrypted filesystem
+
+Encrypted filesystem with an encrypted key on a off-chip flash, device unique key stored on-chip
+
+after passing the authentication, the filesystem key is provisioned and used for further accesses
+
+keys are separated since we can destroy and regenerate the filesystem key if we want to format or reset the device
+
+### Updating the boot firmware OTA(over the air)
+
+signature is checkout using the provisioned public key(not a secret, only need to confirm that it cannot be substituted, thus store its hash on-chip), firmware version cannot be rolled back: non-volatile counter guarantees that the firmware version cannot be rolled back
 
