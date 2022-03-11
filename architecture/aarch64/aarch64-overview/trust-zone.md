@@ -6,7 +6,7 @@ trusted world: smaller and simpler SW stack(TEE) which provide trusted services 
 
 ## TrustZone in the processor
 
-EL0/1/2 can be in Secure/Non-secure state, we can use `SCR_EL3.NS` to control it; EL3 is always in Secure state
+EL0/1/2 can be in Secure/Non-secure state, we can use `SCR_EL3.NS`(Secure Configuration Register) to control it; EL3 is always in Secure state
 
 Secure state and exception levels:
 
@@ -88,7 +88,7 @@ execution starting point: trusted ROM, on-chip; trusted RAM, a couple of hundred
 
 common trusted services: key management, DRM(Digital Rights Management)
 
-scheduling: TEE as a task in Rich OS, when it is scheduler, using `SMC` to switch to TEE, this design provide only confidentiality but not availability, 
+scheduling: TEE as a task in Rich OS, when it is scheduled, using `SMC` to switch to TEE, this design provide only confidentiality but not availability, 
 
 trusted kernels: [OP-TEE](https://optee.readthedocs.io/en/latest/)(based on trusted firmware [provided by ARM officially](https://github.com/ARM-software/arm-trusted-firmware) and [another website](https://www.trustedfirmware.org/)), fully featured, open-source, 
 
