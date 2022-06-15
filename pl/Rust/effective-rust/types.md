@@ -6,4 +6,4 @@ if caller want to handle the possible failure: `char::from_u32` versus `char::fr
 
 function pointers `fn` like `fn(i32, i32) -> i32` implements `Copy, Eq, std::fmt::Pointer`
 
-closures: we can carry date other than arguments,
+closures: we can carry data other than arguments,
