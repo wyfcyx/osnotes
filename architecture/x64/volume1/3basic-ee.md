@@ -114,4 +114,12 @@ EFLAGS中剩下的系统位和IOPL字段不应被应用程序修改。
 
 ***
 
-指令指针EIP保存着当前代码段中下一条将被执行的指令的段内偏移。
+指令指针EIP保存着当前代码段中下一条将被执行的指令的段内偏移。相关跳转指令：JMP/Jcc/CALL/RET/IRET以及中断或异常。
+
+如果想要读EIP的话，唯一一种方法是执行一条CALL指令然后从调用栈的return instruction pointer中读取。因此，如果修改这个return instruction pointer，再执行返回指令如RET/IRET也可以达到修改EIP的效果。
+
+注意指令预取带来的影响。
+
+在64位模式下，EIP变为64位的RIP，还增加了一种基于RIP的寻址模式。
+
+## 挖坑
