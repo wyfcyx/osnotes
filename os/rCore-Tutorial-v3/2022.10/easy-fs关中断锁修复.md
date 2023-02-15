@@ -53,4 +53,53 @@ easy-fs中涉及到`read_block`和`write_block`的位置需要小心设计调用
 
 xv6针对关中断锁采用的是一种较为保守的方案：在`spinlock`前后分别使用`push_off`和`pop_off`来维护当前关中断锁层数。上段问题：获取到之后再关中断显然不行，因为可能获取到之后、关中断之前触发中断然后GG。这里在从0变1层的时候会记录当前锁是否启用。然后回到0层的时候会按照之前记录的情况恢复。这中间都是关中断状态吗？这大概要讨论这样几个问题：在变成1层之前是在执行系统调用还是在中断handler中？中间是否涉及到返回用户态或者进行任务切换？这里指导书并没有强调，我们需要自己考虑一下。
 
-**睡眠锁**：xv6给出其应用场景是当持有一把锁的时间可能很长，导致另一个线程忙等浪费CPU时间很长的情形。`spinlock`的另一个缺点是在持有自旋锁的时候不能让出CPU，不然*有可能*会导致死锁。
+**睡眠锁**：xv6给出其应用场景是当持有一把锁的时间可能很长，导致另一个线程忙等浪费CPU时间很长的情形。指导书中说：“不能在持有锁的情况下交出CPU，不然会导致死锁。”这应该只在xv6这种设计中成立。因为`spinlock`都带有关中断功能，假设一个线程持有锁的情况下交出CPU，另一个线程**在相同CPU上执行**，在`acquire`该锁的时候显然已经是关中断的，这就死锁了。所以说就需要一种锁满足：在尝试获取该锁的时候可以yield，**在持有该锁之后也可以yield或者允许中断进入**。数据结构如下：
+
+```c
+// Long-term locks for processes
+struct sleeplock {
+  uint locked;       // Is the lock held?
+  struct spinlock lk; // spinlock protecting this sleep lock
+  
+  // For debugging:
+  char *name;        // Name of lock.
+  int pid;           // Process holding lock
+};
+
+// 尝试获取一把sleeplock，在等待的时候可以让出CPU，这其实就是一个条件变量wait操作
+void
+acquiresleep(struct sleeplock *lk)
+{
+  acquire(&lk->lk);
+  // 这里是关中断的
+  while (lk->locked) {
+    sleep(lk, &lk->lk);
+  }
+  lk->locked = 1;
+  lk->pid = myproc()->pid;
+  release(&lk->lk);
+}
+// 释放一把sleeplock，也是典型的条件变量signal
+void
+releasesleep(struct sleeplock *lk)
+{
+  acquire(&lk->lk);
+  lk->locked = 0;
+  lk->pid = 0;
+  wakeup(lk);
+  release(&lk->lk);
+}
+
+// 这个好像只是检查一下当前进程有没有拿着某个sleeplock
+int
+holdingsleep(struct sleeplock *lk)
+{
+  int r;
+  
+  acquire(&lk->lk);
+  r = lk->locked && (lk->pid == myproc()->pid);
+  release(&lk->lk);
+  return r;
+}
+```
+
