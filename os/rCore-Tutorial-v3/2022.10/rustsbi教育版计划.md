@@ -41,3 +41,22 @@ RustSBI原型化系统指的应该是[standalone](https://github.com/rustsbi/sta
 ---
 
 将linker嵌入`build.rs`的做法值得研究一下。
+
+---
+
+我们能够借助rustsbi现有的哪些生态？一种比较理想的方法就是参考rustsbi-qemu和standalone，进行简化并只保留必要的东西，然后自己搞一个rustsbi-qemu-edu，之前也是这样设想的。但是之前似乎并没有深入研究可行性。
+
+看了一下rustsbi的文档，感觉还不够，这个应该是给出了板子无关的一套rustsbi call标准通用的实现？那么研究一下现有的rustsbi-qemu，看看能够如何简化吧。
+
+---
+
+system reset相关：
+
+首先是在QEMU层，在各种ISA上似乎都有reset的相关支持，比如在RV64架构下，只要选择带有sifive test device设备的board（比如virt），就可以使用到这种reset功能。做法大概是将一个值写入到QEMU指定的一个内存地址。在[sifive_test_device](https://docs.rs/sifive-test-device/latest/src/sifive_test_device/lib.rs.html#10)这个crate中可以看到是写入一个32位的值，低2字节表示正常退出=0x5555，失败=0x3333，重启=0x7777，然后如果是失败的话，高2字节可以表示一个errno。我看rustsbi-qemu的实现是传了一个-1的errno，结合这里的实现的话好像有点问题...
+
+SBI call现在也有专门的reset调用了，有两个参数reset type和reason，在rustsbi-qemu里面可以调用sifive_test_device的接口，虽然感觉传参数有点不正确。
+
+---
+
+看代码的另一点感想是目前rustsbi和fast-trap的耦合有点紧...于是现在不太容易看得出执行流是如何从rustsbi切换到内核的，就非常麻烦...然后这个东西又跟SBI规范的HSM拓展有关系，最开始应该是使用的sbi_hart_start函数吧。这个可以设置内核入口以及进入之后的a0和a1参数寄存器。但是目前还没有找到具体什么地方进入的，可能需要到fast-trap里面看看了。
+
