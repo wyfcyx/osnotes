@@ -3,8 +3,16 @@
 * [Go语言原本之并发调度](https://golang.design/under-the-hood/zh-cn/part2runtime/ch06sched/)
 * [Why goroutines instead of threads?](https://go.dev/doc/faq#goroutines)
 * 一些系列文章：[[1]](https://cloud.tencent.com/developer/article/1412488),[[2]](https://cloud.tencent.com/developer/article/1412489),[[3]](https://cloud.tencent.com/developer/article/1416867),[[4]](https://cloud.tencent.com/developer/article/1416868)
+* [一篇论文 Analysis of the Go runtime scheduler](http://www1.cs.columbia.edu/~aho/cs6998/reports/12-12-11_DeshpandeSponslerWeiss_GO.pdf)
+* [一个PPT The Scheduler Saga](https://speakerdeck.com/kavya719/the-scheduler-saga)
 
 为什么忽然突发奇想来看一下Go语言的调度器呢，因为同样是用户态的调度库，感觉这个能更多的借鉴到工作中。相比来说，基于Rust的Tokio也很好，但是我们目前应该还不太会涉及到异步IO，而且C语言中显然也不支持async/await关键字以及stackless coroutine，如果手写状态机的话感觉收益也不明显。所以说Golang中的这个scheduler倒是可以研究一下。
+
+## 设计文档与源码
+
+设计文档：https://golang.org/s/go11sched
+
+源码：https://go.dev/src/runtime/proc.go
 
 ## goroutines instead of threads
 
@@ -27,3 +35,5 @@
 ### MPG模型与并发调度单元
 
 模型三要素：M(Machine)，也就是worker thread，1:1模型的线程；P(Processor)，数量等同于核数，一个worker必须与一个Processor关联才能执行worker上面的goroutine，当然一个Processor上面同时也只能绑定一个worker；G(Goroutine)，即复用worker的用户态有栈协程。
+
+一句话总结的话：当最后一个自旋的worker结束自旋状态（意味着此时有空闲的P且有G就绪）的时候，会额外unpark一个worker。
