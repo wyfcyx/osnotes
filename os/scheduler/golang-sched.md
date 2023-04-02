@@ -37,3 +37,7 @@
 模型三要素：M(Machine)，也就是worker thread，1:1模型的线程；P(Processor)，数量等同于核数，一个worker必须与一个Processor关联才能执行worker上面的goroutine，当然一个Processor上面同时也只能绑定一个worker；G(Goroutine)，即复用worker的用户态有栈协程。
 
 一句话总结的话：当最后一个自旋的worker结束自旋状态（意味着此时有空闲的P且有G就绪）的时候，会额外unpark一个worker。
+
+## 系列文章
+
+系列文章[3]讲的不错，直接列出了很多策略，这样可以看看哪些我们可以用起来。
