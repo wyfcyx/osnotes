@@ -150,3 +150,9 @@ xv6的文件系统：整个buffer cache层有一把spinlock；buffer cache层的
 注意此sleeplock非彼sleeplock。其实原先的文件系统那里应该搞一个sleeplock，这个sleeplock就是block在一个virtio blk chan上，然后在intr的时候唤醒，这个能叫sleeplock吗？
 
 无论单核还是多核，持spinlock的时候都有可能被打断。
+
+20241009
+
+接口分析：目前kernel侧的使用方法是：传入一个block device来构造一个BlockCacheMgr，通过BlockCacheMgr来构造EasyFileSystem。然后通过Inode::root_inode传入EasyFileSystem来得到root_inode，后续操作都通过root_inode为媒介来进行。
+
+假设我们想做到文件系统的所有操作全部互斥，那么可以考虑&Inode提供内部可变性，
